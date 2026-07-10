@@ -88,7 +88,9 @@ class KiroCompressionProxy:
                 )
                 flow.request.set_content(compressed_body)
             else:
-                self.stats.bytes_after += (original_size - compressed_size)  # correct the stat
+                # No benefit — undo optimistic accounting, record original size
+                self.stats.bytes_after -= compressed_size
+                self.stats.bytes_after += original_size
                 logger.debug("No compression benefit, forwarding unchanged")
 
         except Exception as e:

@@ -104,6 +104,17 @@ else
     fail "mitmproxy CA file missing (${MITM_CA})"
 fi
 
+# Check CA key permissions
+if [[ -f "${PROXY_DIR}/ca.key" ]]; then
+    KEY_PERMS=$(stat -f "%Lp" "${PROXY_DIR}/ca.key" 2>/dev/null)
+    if [[ "${KEY_PERMS}" == "600" ]]; then
+        pass "CA key permissions correct (600)"
+    else
+        fail "CA key permissions too open (${KEY_PERMS}, should be 600)"
+        hint "Run: chmod 600 ${PROXY_DIR}/ca.key"
+    fi
+fi
+
 echo ""
 
 # --- 3. Environment variables ---

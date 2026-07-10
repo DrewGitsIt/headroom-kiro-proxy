@@ -12,8 +12,6 @@ Requires: rumps (pip install rumps)
 
 import json
 import os
-import threading
-import time
 import urllib.request
 from datetime import datetime, timezone
 
@@ -24,8 +22,11 @@ HEALTH_URL = "http://127.0.0.1:9090/health"
 POLL_INTERVAL = 10  # seconds
 ICON_PATH = os.path.join(os.path.dirname(__file__), "..", "assets", "mushroom-16.png")
 
-# Cost estimate: Claude Opus input pricing
-COST_PER_BYTE = 3.0 / 1_000_000 / 4  # ~$3/M tokens, ~4 chars/token
+# Cost estimate: Claude Opus input pricing.
+# Note: assumes ~4 chars/token (English prose average). JSON tokenizes less
+# efficiently (~2.5-3 chars/token), so actual savings are likely 25-40% higher
+# than reported here. We intentionally understate to stay conservative.
+COST_PER_BYTE = 3.0 / 1_000_000 / 4
 
 
 class KiroProxyApp(rumps.App):
@@ -58,23 +59,18 @@ class KiroProxyApp(rumps.App):
             None,  # separator
         ]
 
-        # Start polling in background
-        self._poll_thread = threading.Thread(target=self._poll_loop, daemon=True)
-        self._poll_thread.start()
-
     @staticmethod
     def _noop(_):
         """No-op callback — makes menu items render at full brightness."""
         pass
 
-    def _poll_loop(self):
-        """Background thread that polls /stats."""
-        while True:
-            try:
-                self._update_stats()
-            except Exception:
-                self._set_offline()
-            time.sleep(POLL_INTERVAL)
+    @rumps.timer(POLL_INTERVAL)
+    def _poll(self, _):
+        """Timer callback on main runloop — polls /stats and updates UI."""
+        try:
+            self._update_stats()
+        except Exception:
+            self._set_offline()
 
     def _update_stats(self):
         """Fetch stats and update menu items."""

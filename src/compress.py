@@ -42,6 +42,7 @@ def compress_conversation(body: bytes) -> dict[str, Any]:
 
     images_stripped = 0
     tool_results_compressed = 0
+    assistant_responses_truncated = 0
 
     # Determine the protection boundary
     protect_start = max(0, len(history) - PROTECT_RECENT_MESSAGES)
@@ -85,6 +86,7 @@ def compress_conversation(body: bytes) -> dict[str, Any]:
                     content[:ASSISTANT_RESPONSE_MAX_CHARS]
                     + f"\n[... {len(content) - ASSISTANT_RESPONSE_MAX_CHARS:,} chars truncated]"
                 )
+                assistant_responses_truncated += 1
 
     req["conversationState"]["history"] = history
     compressed_body = json.dumps(req, separators=(",", ":")).encode()
@@ -93,6 +95,7 @@ def compress_conversation(body: bytes) -> dict[str, Any]:
         "body": compressed_body,
         "images_stripped": images_stripped,
         "tool_results_compressed": tool_results_compressed,
+        "assistant_responses_truncated": assistant_responses_truncated,
     }
 
 

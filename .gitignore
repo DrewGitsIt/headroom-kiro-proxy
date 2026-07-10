@@ -24,6 +24,9 @@ system-roots.pem
 /tmp/
 testdata/
 
+# Design docs (internal only)
+docs/
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db

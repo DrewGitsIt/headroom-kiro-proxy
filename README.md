@@ -10,6 +10,8 @@ curl -sSL https://raw.githubusercontent.com/DrewGitsIt/headroom-kiro-proxy/main/
 
 Then open a new terminal (or `source ~/.zshrc`). That's it — all kiro sessions are now compressed.
 
+> **Trust model:** This downloads and executes scripts from this repo over HTTPS. You're trusting this GitHub account and GitHub's transport security. Review the [install script](scripts/install.sh) before running if you prefer.
+
 ## What it does
 
 - Runs a local HTTPS proxy on `127.0.0.1:9090`

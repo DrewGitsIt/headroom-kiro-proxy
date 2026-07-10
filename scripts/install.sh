@@ -257,47 +257,14 @@ else
     info "tao not detected, skipping"
 fi
 
-# --- Step 6: Health check ---
-step 6 "Verifying installation"
+# --- Step 6: Run doctor.sh ---
+step 6 "Running health check"
 
 echo ""
-PASSED=0
-FAILED=0
-
-# Check proxy
-if curl -s --max-time 2 "http://127.0.0.1:${PROXY_PORT}/health" > /dev/null 2>&1; then
-    info "Proxy responding on :${PROXY_PORT}"
-    ((PASSED++))
-else
-    warn "Proxy not responding"
-    ((FAILED++))
-fi
-
-# Check CA bundle
-if [[ -f "${CA_BUNDLE}" ]] && openssl x509 -in "${CA_PEM}" -noout 2>/dev/null; then
-    info "CA certificate valid"
-    ((PASSED++))
-else
-    warn "CA certificate issue"
-    ((FAILED++))
-fi
-
-# Check env in shell config
-if grep -q "HTTPS_PROXY" "${SHELL_RC}" 2>/dev/null; then
-    info "Shell config has proxy env vars"
-    ((PASSED++))
-else
-    warn "Shell config missing env vars"
-    ((FAILED++))
-fi
+bash "${PROXY_DIR}/doctor.sh"
 
 echo ""
 echo -e "${BOLD}=== Installation complete ===${NC}"
-echo ""
-echo "  Checks passed: ${PASSED}/3"
-if [[ ${FAILED} -gt 0 ]]; then
-    echo "  Issues found:  ${FAILED} (run ~/.kiro-proxy/doctor.sh for details)"
-fi
 echo ""
 echo "  Proxy:     127.0.0.1:${PROXY_PORT} (running)"
 echo "  CA cert:   ${CA_BUNDLE}"
