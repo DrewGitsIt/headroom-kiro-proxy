@@ -22,11 +22,13 @@ HEALTH_URL = "http://127.0.0.1:9090/health"
 POLL_INTERVAL = 10  # seconds
 ICON_PATH = os.path.join(os.path.dirname(__file__), "..", "assets", "mushroom-16.png")
 
-# Cost estimate: Claude Opus input pricing.
-# Note: assumes ~4 chars/token (English prose average). JSON tokenizes less
-# efficiently (~2.5-3 chars/token), so actual savings are likely 25-40% higher
-# than reported here. We intentionally understate to stay conservative.
-COST_PER_BYTE = 3.0 / 1_000_000 / 4
+# Cost estimate: Claude Opus 4.6 input pricing ($5/MTok).
+# Source: https://platform.claude.com/docs/en/about-claude/pricing
+# Assumes ~4 chars/token (Anthropic's stated approximation for English text).
+# JSON tokenizes less efficiently (~2.5-3 chars/token due to keys and brackets),
+# so actual savings are likely 25-40% higher than reported here. We intentionally
+# understate to stay conservative.
+COST_PER_BYTE = 5.0 / 1_000_000 / 4
 
 
 class KiroProxyApp(rumps.App):
