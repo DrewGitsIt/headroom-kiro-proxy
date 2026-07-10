@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.kiro-proxy.compression</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__MITMDUMP_PATH__</string>
+        <string>-s</string>
+        <string>__PROXY_SCRIPT_PATH__</string>
+        <string>--listen-port</string>
+        <string>9090</string>
+        <string>--set</string>
+        <string>confdir=__PROXY_DIR__</string>
+        <string>--allow-hosts</string>
+        <string>runtime\.us-east-1\.kiro\.dev</string>
+        <string>-q</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__SRC_DIR__</string>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__PROXY_DIR__/logs/proxy.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__PROXY_DIR__/logs/proxy.err</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>ThrottleInterval</key>
+    <integer>1</integer>
+</dict>
+</plist>
