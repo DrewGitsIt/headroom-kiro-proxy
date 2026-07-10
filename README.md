@@ -59,7 +59,7 @@ The proxy CA is only trusted by processes that have `SSL_CERT_FILE` pointing to 
 | git, curl, gh, glab | +5–55ms | CONNECT tunnel, no TLS interception |
 | npm, brew, pip | Negligible | Cache-dominated; proxy adds <50ms per request |
 | VPN, streaming, Jira | None observed | Transparent passthrough |
-| kiro-cli request size | **−38–54%** | Depends on conversation length |
+| kiro-cli request size | **−38–54%** | Based on mid-length conversations |
 
 ## Requirements
 
