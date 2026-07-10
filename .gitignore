@@ -23,3 +23,8 @@ system-roots.pem
 # Test artifacts
 /tmp/
 testdata/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key

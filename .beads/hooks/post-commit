@@ -1,0 +1,8 @@
+#!/bin/bash
+# Auto-installed by tao-dashboard
+export BEADS_DIR=""
+
+# Extract bead ID from commit message (e.g. [WS1-3] implement feature)
+BEAD_ID=$(git log -1 --pretty=%B | grep -oE '\[[a-zA-Z0-9_-]+\]' | head -1 | tr -d '[]')
+
+exec post-commit-hook

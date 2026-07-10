@@ -1,0 +1,8 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_database": "headroom_kiro_proxy",
+  "project_id": "e918a791-cf04-4a52-bf2a-9d1e6d90f230",
+  "global_dolt_database": "beads_global"
+}
