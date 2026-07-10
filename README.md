@@ -61,10 +61,6 @@ The proxy CA is only trusted by processes that have `SSL_CERT_FILE` pointing to 
 | VPN, streaming, Jira | None observed | Transparent passthrough |
 | kiro-cli request size | **−38–54%** | Depends on conversation length |
 
-## Tao / ACP support
-
-The installer auto-detects `~/.tao/env` and configures it so that tao-launched ACP sessions also route through the proxy. Requires tao's `ScopedEnv` whitelist to include `SSL_CERT_FILE` (see [docs/design.md](docs/design.md) for details).
-
 ## Requirements
 
 - macOS (tested on Sonoma/Apple Silicon)
