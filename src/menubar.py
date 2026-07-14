@@ -18,33 +18,8 @@ from datetime import datetime, timezone
 import rumps
 
 STATS_URL = "http://127.0.0.1:9090/stats"
-HEALTH_URL = "http://127.0.0.1:9090/health"
 POLL_INTERVAL = 10  # seconds
 ICON_PATH = os.path.join(os.path.dirname(__file__), "..", "assets", "mushroom-16.png")
-CONFIG_PATH = os.path.expanduser("~/.kiro-proxy/config.json")
-
-# Default: Claude Opus 4.6 input pricing ($5/MTok).
-# Source: https://platform.claude.com/docs/en/about-claude/pricing
-# Assumes ~4 chars/token (Anthropic's stated approximation for English text).
-# JSON tokenizes less efficiently (~2.5-3 chars/token), so actual savings are
-# likely 25-40% higher than reported. We intentionally understate.
-DEFAULT_COST_PER_MTOK = 5.0
-
-
-def load_config() -> dict:
-    """Load config from disk, returning defaults if missing."""
-    try:
-        with open(CONFIG_PATH) as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
-
-
-def save_config(config: dict) -> None:
-    """Persist config to disk."""
-    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
-    with open(CONFIG_PATH, "w") as f:
-        json.dump(config, f, indent=2)
 
 
 class KiroProxyApp(rumps.App):
@@ -55,17 +30,12 @@ class KiroProxyApp(rumps.App):
             template=True,  # macOS handles dark/light mode
         )
 
-        # Load persisted config
-        config = load_config()
-        self._cost_per_mtok = config.get("cost_per_mtok", DEFAULT_COST_PER_MTOK)
-        self._cost_updated_at = config.get("cost_updated_at", None)
-
-        # Menu items — using callbacks to make them "clickable" (renders full brightness)
+        # Menu items — using callbacks to render at full brightness
         self.status_item = rumps.MenuItem("Status: checking...", callback=self._noop)
         self.savings_item = rumps.MenuItem("Savings: --", callback=self._noop)
+        self.tokens_item = rumps.MenuItem("Tokens saved: --", callback=self._noop)
         self.requests_item = rumps.MenuItem("Requests: --", callback=self._noop)
         self.bytes_item = rumps.MenuItem("Bytes saved: --", callback=self._noop)
-        self.cost_item = rumps.MenuItem("Est. saved: --", callback=self._edit_cost)
         self.last_item = rumps.MenuItem("Last compressed: --", callback=self._noop)
         self.errors_item = rumps.MenuItem("Errors: --", callback=self._noop)
 
@@ -73,9 +43,9 @@ class KiroProxyApp(rumps.App):
             self.status_item,
             None,  # separator
             self.savings_item,
+            self.tokens_item,
             self.requests_item,
             self.bytes_item,
-            self.cost_item,
             None,  # separator
             self.last_item,
             self.errors_item,
@@ -86,38 +56,6 @@ class KiroProxyApp(rumps.App):
     def _noop(_):
         """No-op callback — makes menu items render at full brightness."""
         pass
-
-    def _edit_cost(self, _):
-        """Show a dialog to edit the cost per million tokens."""
-        updated_note = ""
-        if self._cost_updated_at:
-            updated_note = f"\nLast updated: {self._cost_updated_at}"
-
-        response = rumps.Window(
-            title="Token Cost",
-            message=f"USD per million input tokens (MTok){updated_note}",
-            default_text=str(self._cost_per_mtok),
-            ok="Save",
-            cancel="Cancel",
-            dimensions=(220, 24),
-        ).run()
-
-        if response.clicked:
-            try:
-                new_cost = float(response.text.strip())
-                if new_cost <= 0:
-                    raise ValueError("Must be positive")
-                self._cost_per_mtok = new_cost
-                self._cost_updated_at = datetime.now().strftime("%Y-%m-%d")
-                save_config({
-                    "cost_per_mtok": self._cost_per_mtok,
-                    "cost_updated_at": self._cost_updated_at,
-                })
-            except ValueError:
-                rumps.alert(
-                    title="Invalid value",
-                    message="Please enter a positive number (e.g. 5.0 for $5/MTok).",
-                )
 
     @rumps.timer(POLL_INTERVAL)
     def _poll(self, _):
@@ -139,24 +77,35 @@ class KiroProxyApp(rumps.App):
         bytes_before = data.get("bytes_before", 0)
         bytes_after = data.get("bytes_after", 0)
         bytes_saved = bytes_before - bytes_after
+        tokens_saved = data.get("tokens_saved", 0)
+        tokens_before = data.get("tokens_before", 0)
         errors = data.get("errors_fallen_through", 0)
         last_at = data.get("last_request_at", "")
 
         # Update title (shown in menu bar next to icon)
-        if requests_total > 0 and savings_pct > 0:
+        if tokens_saved > 0:
+            self.title = f" {self._human_tokens(tokens_saved)}"
+        elif requests_total > 0 and savings_pct > 0:
             self.title = f" {savings_pct:.0f}%"
         else:
             self.title = ""
 
         # Update menu items
         self.status_item.title = "Status: ● Running"
-        self.savings_item.title = f"Savings: {savings_pct:.1f}%"
+
+        if tokens_before > 0:
+            token_pct = (tokens_saved / tokens_before) * 100
+            self.savings_item.title = f"Savings: {token_pct:.1f}% tokens reduced"
+        else:
+            self.savings_item.title = f"Savings: {savings_pct:.1f}% bytes"
+
+        if tokens_saved > 0:
+            self.tokens_item.title = f"Tokens saved: {tokens_saved:,} ({self._human_tokens(tokens_saved)})"
+        else:
+            self.tokens_item.title = "Tokens saved: --"
+
         self.requests_item.title = f"Requests: {requests_compressed}/{requests_total} compressed"
         self.bytes_item.title = f"Bytes saved: {self._human_bytes(bytes_saved)}"
-
-        cost_per_byte = self._cost_per_mtok / 1_000_000 / 4
-        cost_saved = bytes_saved * cost_per_byte
-        self.cost_item.title = f"Est. saved: ~${cost_saved:.2f}"
 
         if last_at:
             self.last_item.title = f"Last compressed: {self._relative_time(last_at)}"
@@ -173,9 +122,9 @@ class KiroProxyApp(rumps.App):
         self.title = " ⚠️"
         self.status_item.title = "Status: ○ Offline"
         self.savings_item.title = "Savings: --"
+        self.tokens_item.title = "Tokens saved: --"
         self.requests_item.title = "Requests: --"
         self.bytes_item.title = "Bytes saved: --"
-        self.cost_item.title = "Est. saved: --"
         self.last_item.title = "Last compressed: --"
         self.errors_item.title = "Errors: --"
 
@@ -188,6 +137,16 @@ class KiroProxyApp(rumps.App):
             return f"{n / 1024:.1f} KB"
         else:
             return f"{n / (1024 * 1024):.1f} MB"
+
+    @staticmethod
+    def _human_tokens(n: int) -> str:
+        """Format token count as human-readable."""
+        if n < 1000:
+            return f"{n} tok"
+        elif n < 1_000_000:
+            return f"{n / 1000:.1f}K tok"
+        else:
+            return f"{n / 1_000_000:.2f}M tok"
 
     @staticmethod
     def _relative_time(iso_str: str) -> str:
