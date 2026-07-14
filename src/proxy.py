@@ -31,6 +31,9 @@ class Stats:
     requests_compressed: int = 0
     bytes_before: int = 0
     bytes_after: int = 0
+    tokens_before: int = 0
+    tokens_after: int = 0
+    tokens_saved: int = 0
     images_stripped: int = 0
     tool_results_compressed: int = 0
     errors_fallen_through: int = 0
@@ -76,6 +79,9 @@ class KiroCompressionProxy:
             self.stats.bytes_after += compressed_size
             self.stats.images_stripped += result.get("images_stripped", 0)
             self.stats.tool_results_compressed += result.get("tool_results_compressed", 0)
+            self.stats.tokens_before += result.get("tokens_before", 0)
+            self.stats.tokens_after += result.get("tokens_after", 0)
+            self.stats.tokens_saved += result.get("tokens_saved", 0)
 
             if compressed_size < original_size:
                 self.stats.requests_compressed += 1
@@ -83,8 +89,8 @@ class KiroCompressionProxy:
                 logger.info(
                     f"Compressed: {original_size:,} → {compressed_size:,} bytes "
                     f"({savings_pct:.1f}% saved, "
-                    f"{result.get('images_stripped', 0)} images stripped, "
-                    f"{result.get('tool_results_compressed', 0)} tool results compressed)"
+                    f"{result.get('tokens_saved', 0):,} tokens saved, "
+                    f"{result.get('images_stripped', 0)} images stripped)"
                 )
                 flow.request.set_content(compressed_body)
             else:
@@ -118,6 +124,9 @@ class KiroCompressionProxy:
                 "savings_percent": round(
                     (1 - self.stats.bytes_after / self.stats.bytes_before) * 100, 1
                 ) if self.stats.bytes_before > 0 else 0.0,
+                "tokens_before": self.stats.tokens_before,
+                "tokens_after": self.stats.tokens_after,
+                "tokens_saved": self.stats.tokens_saved,
                 "images_stripped": self.stats.images_stripped,
                 "tool_results_compressed": self.stats.tool_results_compressed,
                 "errors_fallen_through": self.stats.errors_fallen_through,
