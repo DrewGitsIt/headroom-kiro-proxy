@@ -48,25 +48,52 @@ cmd_status() {
         return 1
     fi
 
-    # Fetch stats
-    local stats
-    stats=$(curl -s --max-time 2 "${STATS_URL}" 2>/dev/null)
-    if [[ -z "${stats}" ]]; then
-        echo "  (no stats available)"
+    # Fetch stats — parse once with python, handle errors gracefully
+    local stats_json
+    stats_json=$(curl -s --max-time 2 "${STATS_URL}" 2>/dev/null)
+
+    if [[ -z "${stats_json}" ]]; then
+        echo "  (no stats available yet — proxy may still be starting)"
         return 0
     fi
 
-    local requests_total requests_compressed avg_savings last_savings
-    local est_tokens est_cost images tools assistants
-    requests_total=$(echo "${stats}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('requests_total',0))")
-    requests_compressed=$(echo "${stats}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('requests_compressed',0))")
-    avg_savings=$(echo "${stats}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('avg_savings_pct',0))")
-    last_savings=$(echo "${stats}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('last_savings_pct',0))")
-    est_tokens=$(echo "${stats}" | python3 -c "import sys,json; d=json.load(sys.stdin); t=d.get('est_tokens_saved',0); print(f'{t/1_000_000:.1f}M' if t>=1_000_000 else f'{t/1000:.1f}K' if t>=1000 else str(t))")
-    est_cost=$(echo "${stats}" | python3 -c "import sys,json; print(f\"{json.load(sys.stdin).get('est_cost_saved_usd',0):.2f}\")")
-    images=$(echo "${stats}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('images_stripped',0))")
-    tools=$(echo "${stats}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('tool_results_compressed',0))")
-    assistants=$(echo "${stats}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('assistant_responses_truncated',0))")
+    # Parse all fields in a single python invocation to avoid multiple pipes
+    local parsed
+    parsed=$(echo "${stats_json}" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except (json.JSONDecodeError, ValueError):
+    print('ERROR')
+    sys.exit(0)
+
+rt = d.get('requests_total', 0)
+rc = d.get('requests_compressed', 0)
+avg_s = d.get('avg_savings_pct', 0)
+last_s = d.get('last_savings_pct', 0)
+et = d.get('est_tokens_saved', 0)
+ec = d.get('est_cost_saved_usd', 0)
+imgs = d.get('images_stripped', 0)
+tools = d.get('tool_results_compressed', 0)
+asst = d.get('assistant_responses_truncated', 0)
+
+if et >= 1_000_000:
+    tokens_str = f'{et/1_000_000:.1f}M'
+elif et >= 1000:
+    tokens_str = f'{et/1000:.1f}K'
+else:
+    tokens_str = str(et)
+
+print(f'{rt}|{rc}|{avg_s}|{last_s}|{tokens_str}|{ec:.2f}|{imgs}|{tools}|{asst}')
+" 2>/dev/null)
+
+    if [[ -z "${parsed}" || "${parsed}" == "ERROR" ]]; then
+        echo "  (stats endpoint returned invalid data)"
+        return 0
+    fi
+
+    IFS='|' read -r requests_total requests_compressed avg_savings last_savings \
+        est_tokens est_cost images tools assistants <<< "${parsed}"
 
     echo ""
     echo -e "  ${BOLD}Compression${NC}"

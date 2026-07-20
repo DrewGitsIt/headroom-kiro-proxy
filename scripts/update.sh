@@ -1,82 +1,85 @@
 #!/bin/bash
-# update.sh — Update kiro proxy source from GitHub.
+# update.sh — Update the kiro compression proxy to the latest version.
 #
-# Downloads the latest proxy.py and compress.py without touching
-# certificates, shell config, or the launchd service.
-# The proxy auto-reloads on next request (mitmproxy re-imports the script).
-#
-# Usage:
-#   ~/.kiro-proxy/update.sh
+# Re-downloads source files and upgrades headroom-ai, then restarts the proxy.
 
 set -euo pipefail
 
-GITHUB_RAW="https://raw.githubusercontent.com/DrewGitsIt/headroom-kiro-proxy/main"
 PROXY_DIR="${HOME}/.kiro-proxy"
+VENV_DIR="${PROXY_DIR}/.venv"
 PROXY_PORT=9090
+GITHUB_RAW="https://raw.githubusercontent.com/DrewGitsIt/headroom-kiro-proxy/main"
+PLIST_LABEL="com.kiro-proxy.compression"
+PLIST_DEST="${HOME}/Library/LaunchAgents/${PLIST_LABEL}.plist"
+APPLET_PLIST_LABEL="com.kiro-proxy.applet"
+APPLET_PLIST_DEST="${HOME}/Library/LaunchAgents/${APPLET_PLIST_LABEL}.plist"
+HEALTH_URL="http://127.0.0.1:${PROXY_PORT}/health"
 
 # Colors
 if [[ -t 1 ]]; then
-    GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BOLD='\033[1m'; NC='\033[0m'
+    GREEN='\033[0;32m'; YELLOW='\033[0;33m'; RED='\033[0;31m'
+    BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
 else
-    GREEN='' YELLOW='' BOLD='' NC=''
+    GREEN=''; YELLOW=''; RED=''; BOLD=''; DIM=''; NC=''
 fi
 
-info()  { echo -e "${GREEN}✓${NC} $*"; }
-warn()  { echo -e "${YELLOW}⚠${NC} $*"; }
-
-echo -e "${BOLD}=== Kiro Proxy — Update ===${NC}"
-echo ""
-
-if [[ ! -d "${PROXY_DIR}/src" ]]; then
-    echo "Error: ${PROXY_DIR}/src not found. Run the installer first."
-    exit 1
-fi
+info() { echo -e "${GREEN}✓${NC} $*"; }
+warn() { echo -e "${YELLOW}!${NC} $*"; }
+fail() { echo -e "${RED}✗${NC} $*"; exit 1; }
 
 download() {
     local url="$1" dest="$2"
-    if curl -sSL --noproxy '*' --fail "${url}" -o "${dest}"; then
-        return 0
-    else
-        echo "Failed to download: ${url}" >&2
-        return 1
+    if ! curl -sSL --noproxy '*' --fail "${url}" -o "${dest}"; then
+        fail "Failed to download: ${url}"
     fi
 }
 
-# Download latest source
-echo "Downloading latest source..."
-download "${GITHUB_RAW}/src/proxy.py"           "${PROXY_DIR}/src/proxy.py"
-download "${GITHUB_RAW}/src/compress.py"        "${PROXY_DIR}/src/compress.py"
-download "${GITHUB_RAW}/src/kiro_translator.py" "${PROXY_DIR}/src/kiro_translator.py"
-info "Updated proxy source"
+echo -e "${BOLD}kiro-proxy updater${NC}"
+echo ""
 
-# Update scripts too
-download "${GITHUB_RAW}/scripts/kiro-wrapper.sh" "${PROXY_DIR}/kiro-wrapper.sh"
-download "${GITHUB_RAW}/scripts/doctor.sh"       "${PROXY_DIR}/doctor.sh"
-download "${GITHUB_RAW}/scripts/update.sh"       "${PROXY_DIR}/update.sh"
-download "${GITHUB_RAW}/scripts/uninstall.sh"    "${PROXY_DIR}/uninstall.sh"
-chmod +x "${PROXY_DIR}/kiro-wrapper.sh" \
+if [[ ! -d "${PROXY_DIR}" ]]; then
+    fail "${PROXY_DIR} not found. Run the installer first."
+fi
+
+if [[ ! -d "${VENV_DIR}" ]]; then
+    fail "Venv not found at ${VENV_DIR}. Run the installer first."
+fi
+
+# 1. Upgrade headroom-ai
+echo -e "${DIM}  Upgrading headroom-ai...${NC}"
+"${VENV_DIR}/bin/pip" install --quiet --upgrade "headroom-ai" "rumps>=0.4.0" 2>&1 | grep -v "already satisfied" || true
+info "Upgraded headroom-ai"
+
+# 2. Download latest source
+download "${GITHUB_RAW}/src/connect_proxy.py" "${PROXY_DIR}/src/connect_proxy.py"
+download "${GITHUB_RAW}/src/handler.py"       "${PROXY_DIR}/src/handler.py"
+download "${GITHUB_RAW}/src/applet.py"        "${PROXY_DIR}/src/applet.py"
+download "${GITHUB_RAW}/scripts/kiro-proxy"   "${PROXY_DIR}/kiro-proxy"
+download "${GITHUB_RAW}/scripts/doctor.sh"    "${PROXY_DIR}/doctor.sh"
+download "${GITHUB_RAW}/scripts/update.sh"    "${PROXY_DIR}/update.sh"
+download "${GITHUB_RAW}/scripts/uninstall.sh" "${PROXY_DIR}/uninstall.sh"
+
+chmod +x "${PROXY_DIR}/kiro-proxy" \
          "${PROXY_DIR}/doctor.sh" \
          "${PROXY_DIR}/update.sh" \
          "${PROXY_DIR}/uninstall.sh"
-info "Updated scripts"
 
-# Restart proxy to pick up new code
-echo ""
-echo "Restarting proxy..."
-PLIST="${HOME}/Library/LaunchAgents/com.kiro-proxy.compression.plist"
-if [[ -f "${PLIST}" ]]; then
-    launchctl unload "${PLIST}" 2>/dev/null || true
-    sleep 1
-    launchctl load "${PLIST}"
-    sleep 2
-    if curl -s --max-time 2 "http://127.0.0.1:${PROXY_PORT}/health" > /dev/null 2>&1; then
-        info "Proxy restarted and healthy"
-    else
-        warn "Proxy not responding after restart. Check: tail -20 ${PROXY_DIR}/logs/proxy.err"
-    fi
+info "Downloaded latest source"
+
+# 3. Restart services
+launchctl unload "${PLIST_DEST}" 2>/dev/null || true
+launchctl unload "${APPLET_PLIST_DEST}" 2>/dev/null || true
+sleep 1
+launchctl load "${PLIST_DEST}" 2>/dev/null || true
+launchctl load "${APPLET_PLIST_DEST}" 2>/dev/null || true
+
+# Wait for proxy
+sleep 2
+if curl -s --max-time 2 "${HEALTH_URL}" > /dev/null 2>&1; then
+    info "Proxy restarted successfully"
 else
-    warn "No launchd plist found — restart proxy manually"
+    warn "Proxy not responding after restart. Check: kiro-proxy logs"
 fi
 
 echo ""
-echo "Done. Latest compression logic is now active."
+info "Update complete. Compression active."
