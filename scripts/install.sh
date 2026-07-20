@@ -2,7 +2,7 @@
 # install.sh — Install the kiro compression proxy.
 #
 # Usage:
-#   curl -sSL https://raw.githubusercontent.com/DrewGitsIt/headroom-kiro-proxy/main/scripts/install.sh | bash
+#   curl -sSL --noproxy '*' https://raw.githubusercontent.com/DrewGitsIt/headroom-kiro-proxy/main/scripts/install.sh | bash
 #
 # What this does:
 #   1. Downloads proxy source from GitHub
@@ -82,13 +82,14 @@ mkdir -p "${PROXY_DIR}/src" "${PROXY_DIR}/logs" "${PROXY_DIR}/scripts"
 
 download() {
     local url="$1" dest="$2"
-    if ! curl -sSL --fail "${url}" -o "${dest}"; then
+    if ! curl -sSL --noproxy '*' --fail "${url}" -o "${dest}"; then
         fail "Failed to download: ${url}"
     fi
 }
 
-download "${GITHUB_RAW}/src/proxy.py"     "${PROXY_DIR}/src/proxy.py"
-download "${GITHUB_RAW}/src/compress.py"  "${PROXY_DIR}/src/compress.py"
+download "${GITHUB_RAW}/src/proxy.py"           "${PROXY_DIR}/src/proxy.py"
+download "${GITHUB_RAW}/src/compress.py"        "${PROXY_DIR}/src/compress.py"
+download "${GITHUB_RAW}/src/kiro_translator.py" "${PROXY_DIR}/src/kiro_translator.py"
 download "${GITHUB_RAW}/scripts/kiro-wrapper.sh" "${PROXY_DIR}/kiro-wrapper.sh"
 download "${GITHUB_RAW}/scripts/doctor.sh"       "${PROXY_DIR}/doctor.sh"
 download "${GITHUB_RAW}/scripts/update.sh"       "${PROXY_DIR}/update.sh"
@@ -201,14 +202,33 @@ cat > "${PLIST_DEST}" << EOF
 EOF
 
 launchctl load "${PLIST_DEST}"
-info "Proxy service installed (auto-starts on login, restarts on crash)"
 
-# Wait for proxy to come up
-sleep 2
-if curl -s --max-time 2 "http://127.0.0.1:${PROXY_PORT}/health" > /dev/null 2>&1; then
+# Wait for proxy to come up (up to 5 seconds)
+RETRIES=5
+PROXY_UP=false
+for i in $(seq 1 ${RETRIES}); do
+    sleep 1
+    if curl -s --max-time 2 "http://127.0.0.1:${PROXY_PORT}/health" > /dev/null 2>&1; then
+        PROXY_UP=true
+        break
+    fi
+done
+
+if [[ "${PROXY_UP}" == "true" ]]; then
     info "Proxy is running on 127.0.0.1:${PROXY_PORT}"
 else
-    warn "Proxy not responding yet. Check: tail -20 ${PROXY_DIR}/logs/proxy.err"
+    warn "Proxy not responding after ${RETRIES}s. Checking for errors..."
+    echo ""
+    if [[ -f "${PROXY_DIR}/logs/proxy.err" ]]; then
+        LAST_ERR="$(tail -5 "${PROXY_DIR}/logs/proxy.err" 2>/dev/null)"
+        if [[ -n "${LAST_ERR}" ]]; then
+            echo "  Last error output:"
+            echo "  ${LAST_ERR}" | sed 's/^/    /'
+        fi
+    fi
+    echo ""
+    warn "Try: tail -20 ${PROXY_DIR}/logs/proxy.err"
+    warn "Then re-run: ~/.kiro-proxy/doctor.sh"
 fi
 
 # --- Step 4: Configure shell environment ---

@@ -5,7 +5,7 @@ A local compression proxy that strips old screenshots, truncates stale tool resu
 ## Install
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/DrewGitsIt/headroom-kiro-proxy/main/scripts/install.sh | bash
+curl -sSL --noproxy '*' https://raw.githubusercontent.com/DrewGitsIt/headroom-kiro-proxy/main/scripts/install.sh | bash
 ```
 
 Then open a new terminal (or `source ~/.zshrc`). That's it — all kiro sessions are now compressed.

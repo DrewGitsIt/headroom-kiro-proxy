@@ -34,7 +34,7 @@ fi
 
 download() {
     local url="$1" dest="$2"
-    if curl -sSL --fail "${url}" -o "${dest}"; then
+    if curl -sSL --noproxy '*' --fail "${url}" -o "${dest}"; then
         return 0
     else
         echo "Failed to download: ${url}" >&2
@@ -44,8 +44,9 @@ download() {
 
 # Download latest source
 echo "Downloading latest source..."
-download "${GITHUB_RAW}/src/proxy.py"     "${PROXY_DIR}/src/proxy.py"
-download "${GITHUB_RAW}/src/compress.py"  "${PROXY_DIR}/src/compress.py"
+download "${GITHUB_RAW}/src/proxy.py"           "${PROXY_DIR}/src/proxy.py"
+download "${GITHUB_RAW}/src/compress.py"        "${PROXY_DIR}/src/compress.py"
+download "${GITHUB_RAW}/src/kiro_translator.py" "${PROXY_DIR}/src/kiro_translator.py"
 info "Updated proxy source"
 
 # Update scripts too
