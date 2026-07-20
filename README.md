@@ -31,14 +31,23 @@ Then open a new terminal (or `source ~/.zshrc`). That's it — all kiro sessions
 ## Lifecycle
 
 ```bash
-# Check health
-~/.kiro-proxy/doctor.sh
+# Check status and stats
+kiro-proxy status
+
+# Tail proxy logs
+kiro-proxy logs
+
+# Temporarily disable (kiro-cli works normally, just uncompressed)
+kiro-proxy disable
+
+# Re-enable
+kiro-proxy enable
 
 # Update to latest compression logic
-~/.kiro-proxy/update.sh
+kiro-proxy update
 
 # Uninstall (clean removal, restores everything)
-~/.kiro-proxy/uninstall.sh
+kiro-proxy uninstall
 ```
 
 ## How it works

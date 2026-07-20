@@ -1,0 +1,172 @@
+#!/bin/bash
+# kiro-proxy — CLI for the kiro compression proxy.
+#
+# Installed to /usr/local/bin/kiro-proxy by the install script.
+
+set -uo pipefail
+
+PROXY_DIR="${HOME}/.kiro-proxy"
+PROXY_PORT=9090
+HEALTH_URL="http://127.0.0.1:${PROXY_PORT}/health"
+STATS_URL="http://127.0.0.1:${PROXY_PORT}/stats"
+
+# Colors (disable if not a terminal)
+if [[ -t 1 ]]; then
+    BOLD='\033[1m'; DIM='\033[2m'; GREEN='\033[0;32m'
+    RED='\033[0;31m'; NC='\033[0m'
+else
+    BOLD=''; DIM=''; GREEN=''; RED=''; NC=''
+fi
+
+usage() {
+    echo -e "${BOLD}kiro-proxy${NC} — manage the kiro compression proxy"
+    echo ""
+    echo "Usage: kiro-proxy <command>"
+    echo ""
+    echo "Commands:"
+    echo "  status      Show proxy health and compression stats"
+    echo "  logs        Tail proxy logs (Ctrl-C to stop)"
+    echo "  update      Pull latest compression logic from GitHub"
+    echo "  uninstall   Remove proxy, restore shell config"
+    echo "  enable      Start the proxy service"
+    echo "  disable     Stop the proxy service"
+    echo "  restart     Restart the proxy service"
+    echo ""
+    echo "Config:  ${PROXY_DIR}/"
+    echo "Logs:    ${PROXY_DIR}/logs/"
+}
+
+cmd_status() {
+    # Quick health check
+    if curl -s --max-time 2 "${HEALTH_URL}" > /dev/null 2>&1; then
+        echo -e "${GREEN}●${NC} Proxy running on 127.0.0.1:${PROXY_PORT}"
+    else
+        echo -e "${RED}●${NC} Proxy not running"
+        echo ""
+        echo "  Start with: kiro-proxy enable"
+        echo "  Diagnose:   kiro-proxy logs"
+        return 1
+    fi
+
+    # Fetch stats
+    local stats
+    stats=$(curl -s --max-time 2 "${STATS_URL}" 2>/dev/null)
+    if [[ -z "${stats}" ]]; then
+        echo "  (no stats available)"
+        return 0
+    fi
+
+    local requests_total requests_compressed avg_savings last_savings
+    local est_tokens est_cost images tools assistants
+    requests_total=$(echo "${stats}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('requests_total',0))")
+    requests_compressed=$(echo "${stats}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('requests_compressed',0))")
+    avg_savings=$(echo "${stats}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('avg_savings_pct',0))")
+    last_savings=$(echo "${stats}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('last_savings_pct',0))")
+    est_tokens=$(echo "${stats}" | python3 -c "import sys,json; d=json.load(sys.stdin); t=d.get('est_tokens_saved',0); print(f'{t/1_000_000:.1f}M' if t>=1_000_000 else f'{t/1000:.1f}K' if t>=1000 else str(t))")
+    est_cost=$(echo "${stats}" | python3 -c "import sys,json; print(f\"{json.load(sys.stdin).get('est_cost_saved_usd',0):.2f}\")")
+    images=$(echo "${stats}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('images_stripped',0))")
+    tools=$(echo "${stats}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('tool_results_compressed',0))")
+    assistants=$(echo "${stats}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('assistant_responses_truncated',0))")
+
+    echo ""
+    echo -e "  ${BOLD}Compression${NC}"
+    echo "    Avg savings:  ${avg_savings}% per request"
+    echo "    Last request: ${last_savings}% saved"
+    echo "    Requests:     ${requests_compressed}/${requests_total} compressed"
+    echo ""
+    echo -e "  ${BOLD}Estimated savings${NC}"
+    echo "    Tokens: ~${est_tokens}"
+    echo "    Cost:   ~\$${est_cost}"
+    echo ""
+    echo -e "  ${BOLD}Breakdown${NC}"
+    echo "    Images stripped:    ${images}"
+    echo "    Tool results:      ${tools}"
+    echo "    Assistants trimmed: ${assistants}"
+}
+
+cmd_logs() {
+    local log_file="${PROXY_DIR}/logs/proxy.err"
+    if [[ ! -f "${log_file}" ]]; then
+        echo "No log file at ${log_file}"
+        return 1
+    fi
+    echo -e "${DIM}Tailing ${log_file} (Ctrl-C to stop)${NC}"
+    echo ""
+    tail -f "${log_file}"
+}
+
+cmd_update() {
+    if [[ -x "${PROXY_DIR}/update.sh" ]]; then
+        exec bash "${PROXY_DIR}/update.sh"
+    else
+        echo "update.sh not found. Re-run the installer:"
+        echo "  curl -sSL --noproxy '*' https://raw.githubusercontent.com/DrewGitsIt/headroom-kiro-proxy/main/scripts/install.sh | bash"
+        return 1
+    fi
+}
+
+cmd_uninstall() {
+    if [[ -x "${PROXY_DIR}/uninstall.sh" ]]; then
+        exec bash "${PROXY_DIR}/uninstall.sh"
+    else
+        echo "uninstall.sh not found at ${PROXY_DIR}/uninstall.sh"
+        echo "Manual cleanup: remove ${PROXY_DIR} and HTTPS_PROXY/SSL_CERT_FILE from your shell rc."
+        return 1
+    fi
+}
+
+cmd_enable() {
+    local plist="${HOME}/Library/LaunchAgents/com.kiro-proxy.compression.plist"
+    if [[ ! -f "${plist}" ]]; then
+        echo "Plist not found. Run the installer first."
+        return 1
+    fi
+    launchctl load "${plist}" 2>/dev/null
+    sleep 2
+    if curl -s --max-time 2 "${HEALTH_URL}" > /dev/null 2>&1; then
+        echo -e "${GREEN}●${NC} Proxy started"
+    else
+        echo -e "${RED}●${NC} Proxy failed to start. Check: kiro-proxy logs"
+        return 1
+    fi
+}
+
+cmd_disable() {
+    local plist="${HOME}/Library/LaunchAgents/com.kiro-proxy.compression.plist"
+    launchctl unload "${plist}" 2>/dev/null
+    echo "Proxy stopped. kiro-cli will bypass compression until re-enabled."
+    echo "  Re-enable with: kiro-proxy enable"
+}
+
+cmd_restart() {
+    local plist="${HOME}/Library/LaunchAgents/com.kiro-proxy.compression.plist"
+    launchctl unload "${plist}" 2>/dev/null
+    sleep 1
+    launchctl load "${plist}" 2>/dev/null
+    sleep 2
+    if curl -s --max-time 2 "${HEALTH_URL}" > /dev/null 2>&1; then
+        echo -e "${GREEN}●${NC} Proxy restarted"
+    else
+        echo -e "${RED}●${NC} Proxy failed to restart. Check: kiro-proxy logs"
+        return 1
+    fi
+}
+
+# --- Main dispatch ---
+case "${1:-}" in
+    status)    cmd_status ;;
+    logs)      cmd_logs ;;
+    update)    cmd_update ;;
+    uninstall) cmd_uninstall ;;
+    enable)    cmd_enable ;;
+    disable)   cmd_disable ;;
+    restart)   cmd_restart ;;
+    -h|--help|help|"")
+        usage ;;
+    *)
+        echo "Unknown command: $1"
+        echo ""
+        usage
+        exit 1
+        ;;
+esac

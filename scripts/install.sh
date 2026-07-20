@@ -91,14 +91,34 @@ download "${GITHUB_RAW}/src/proxy.py"           "${PROXY_DIR}/src/proxy.py"
 download "${GITHUB_RAW}/src/compress.py"        "${PROXY_DIR}/src/compress.py"
 download "${GITHUB_RAW}/src/kiro_translator.py" "${PROXY_DIR}/src/kiro_translator.py"
 download "${GITHUB_RAW}/scripts/kiro-wrapper.sh" "${PROXY_DIR}/kiro-wrapper.sh"
+download "${GITHUB_RAW}/scripts/kiro-proxy"      "${PROXY_DIR}/kiro-proxy"
 download "${GITHUB_RAW}/scripts/doctor.sh"       "${PROXY_DIR}/doctor.sh"
 download "${GITHUB_RAW}/scripts/update.sh"       "${PROXY_DIR}/update.sh"
 download "${GITHUB_RAW}/scripts/uninstall.sh"    "${PROXY_DIR}/uninstall.sh"
 
 chmod +x "${PROXY_DIR}/kiro-wrapper.sh" \
+         "${PROXY_DIR}/kiro-proxy" \
          "${PROXY_DIR}/doctor.sh" \
          "${PROXY_DIR}/update.sh" \
          "${PROXY_DIR}/uninstall.sh"
+
+# Install CLI to PATH
+CLI_DEST="/usr/local/bin/kiro-proxy"
+if [[ -w "/usr/local/bin" ]]; then
+    ln -sf "${PROXY_DIR}/kiro-proxy" "${CLI_DEST}"
+    info "Installed kiro-proxy CLI to ${CLI_DEST}"
+elif [[ -w "$(dirname "${CLI_DEST}")" ]]; then
+    ln -sf "${PROXY_DIR}/kiro-proxy" "${CLI_DEST}"
+    info "Installed kiro-proxy CLI to ${CLI_DEST}"
+else
+    # Try with sudo, but don't fail the install if the user declines
+    echo "Installing kiro-proxy CLI to ${CLI_DEST} (requires sudo)..."
+    if sudo ln -sf "${PROXY_DIR}/kiro-proxy" "${CLI_DEST}" 2>/dev/null; then
+        info "Installed kiro-proxy CLI to ${CLI_DEST}"
+    else
+        warn "Could not install CLI to PATH. Use directly: ${PROXY_DIR}/kiro-proxy"
+    fi
+fi
 
 info "Downloaded to ${PROXY_DIR}/src/"
 
@@ -291,9 +311,13 @@ echo "  CA cert:   ${CA_BUNDLE}"
 echo "  Logs:      ${PROXY_DIR}/logs/"
 echo ""
 echo "  To activate in this shell:  source ${SHELL_RC}"
-echo "  To check health:            ~/.kiro-proxy/doctor.sh"
-echo "  To update:                  ~/.kiro-proxy/update.sh"
-echo "  To uninstall:               ~/.kiro-proxy/uninstall.sh"
+echo ""
+echo "  kiro-proxy status      Show health and compression stats"
+echo "  kiro-proxy logs        Tail proxy logs"
+echo "  kiro-proxy disable     Temporarily stop compression"
+echo "  kiro-proxy enable      Re-enable compression"
+echo "  kiro-proxy update      Pull latest compression logic"
+echo "  kiro-proxy uninstall   Clean removal"
 echo ""
 echo "  All kiro-cli sessions (terminal, ACP, IDE) will now be compressed."
 echo "  Other tools (git, curl, npm, brew, AWS) are unaffected."

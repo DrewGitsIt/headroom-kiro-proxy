@@ -92,7 +92,18 @@ launchctl setenv HTTPS_PROXY "" 2>/dev/null || true
 # The vars will be gone after reboot anyway
 info "Cleared launchctl env vars (fully gone after reboot)"
 
-# 5. Delete ~/.kiro-proxy/
+# 5. Remove CLI from PATH
+CLI_DEST="/usr/local/bin/kiro-proxy"
+if [[ -L "${CLI_DEST}" ]]; then
+    if [[ -w "${CLI_DEST}" ]] || [[ -w "$(dirname "${CLI_DEST}")" ]]; then
+        rm -f "${CLI_DEST}"
+    else
+        sudo rm -f "${CLI_DEST}" 2>/dev/null || true
+    fi
+    info "Removed kiro-proxy CLI from PATH"
+fi
+
+# 6. Delete ~/.kiro-proxy/
 if [[ -d "${PROXY_DIR}" ]]; then
     rm -rf "${PROXY_DIR}"
     info "Deleted ${PROXY_DIR}"
@@ -106,4 +117,4 @@ echo "  Open a new terminal for shell changes to take effect."
 echo "  Reboot to fully clear launchctl env vars."
 echo ""
 echo "  To reinstall:"
-echo "  curl -sSL https://raw.githubusercontent.com/DrewGitsIt/headroom-kiro-proxy/main/scripts/install.sh | bash"
+echo "  curl -sSL --noproxy '*' https://raw.githubusercontent.com/DrewGitsIt/headroom-kiro-proxy/main/scripts/install.sh | bash"
