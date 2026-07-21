@@ -122,6 +122,8 @@ download "${GITHUB_RAW}/scripts/kiro-proxy"   "${PROXY_DIR}/kiro-proxy"
 download "${GITHUB_RAW}/scripts/doctor.sh"    "${PROXY_DIR}/doctor.sh"
 download "${GITHUB_RAW}/scripts/update.sh"    "${PROXY_DIR}/update.sh"
 download "${GITHUB_RAW}/scripts/uninstall.sh" "${PROXY_DIR}/uninstall.sh"
+download "${GITHUB_RAW}/assets/mushroom-16.png"    "${PROXY_DIR}/assets/mushroom-16.png"
+download "${GITHUB_RAW}/assets/mushroom-16@2x.png" "${PROXY_DIR}/assets/mushroom-16@2x.png"
 
 chmod +x "${PROXY_DIR}/kiro-proxy" \
          "${PROXY_DIR}/doctor.sh" \
@@ -145,32 +147,59 @@ else
 fi
 
 # --- Step 4: Generate CA certificate ---
-step 4 "Generating CA certificate"
+step 4 "Generating TLS certificates"
 
 CERT_DIR="${PROXY_DIR}"
-CA_KEY="${CERT_DIR}/key.pem"
-CA_CERT="${CERT_DIR}/cert.pem"
+CA_KEY="${CERT_DIR}/ca-key.pem"
+CA_CERT="${CERT_DIR}/ca-cert.pem"
+HOST_KEY="${CERT_DIR}/key.pem"
+HOST_CERT="${CERT_DIR}/cert.pem"
 CA_BUNDLE="${CERT_DIR}/ca-bundle.pem"
 
 if [[ -f "${CA_CERT}" && -f "${CA_KEY}" ]]; then
-    # Verify existing cert is not expired
     if openssl x509 -checkend 86400 -noout -in "${CA_CERT}" &>/dev/null; then
         info "Existing CA certificate is valid, reusing"
     else
         warn "Existing CA certificate expired, regenerating"
-        rm -f "${CA_KEY}" "${CA_CERT}" "${CA_BUNDLE}"
+        rm -f "${CA_KEY}" "${CA_CERT}" "${HOST_KEY}" "${HOST_CERT}" "${CA_BUNDLE}"
     fi
 fi
 
 if [[ ! -f "${CA_CERT}" ]]; then
+    # Generate CA key + self-signed CA cert
     openssl req -x509 -newkey rsa:2048 \
         -keyout "${CA_KEY}" -out "${CA_CERT}" \
         -days 3650 -nodes \
-        -subj "/CN=kiro-proxy CA/O=kiro-proxy/OU=local" \
+        -subj "/CN=kiro-proxy CA/O=kiro-proxy" \
         -addext "basicConstraints=critical,CA:TRUE" \
         -addext "keyUsage=critical,keyCertSign,cRLSign" \
         2>/dev/null
+    chmod 600 "${CA_KEY}"
     info "Generated CA certificate (10-year validity)"
+fi
+
+if [[ ! -f "${HOST_CERT}" ]]; then
+    # Generate host key + CSR
+    openssl req -newkey rsa:2048 -nodes \
+        -keyout "${HOST_KEY}" \
+        -out "${CERT_DIR}/host.csr" \
+        -subj "/CN=runtime.us-east-1.kiro.dev" \
+        2>/dev/null
+
+    # Sign host cert with our CA
+    cat > "${CERT_DIR}/host.ext" << EXTEOF
+authorityKeyIdentifier=keyid,issuer
+basicConstraints=CA:FALSE
+subjectAltName=DNS:runtime.us-east-1.kiro.dev
+EXTEOF
+
+    openssl x509 -req -in "${CERT_DIR}/host.csr" \
+        -CA "${CA_CERT}" -CAkey "${CA_KEY}" \
+        -CAcreateserial -out "${HOST_CERT}" \
+        -days 3650 -extfile "${CERT_DIR}/host.ext" \
+        2>/dev/null
+    chmod 600 "${HOST_KEY}"
+    info "Generated host certificate for runtime.us-east-1.kiro.dev"
 fi
 
 # Build bundle: system roots + our CA
