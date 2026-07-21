@@ -25,7 +25,7 @@ The installer will:
 - Strips base64 images from old turns (~35% savings per image)
 - Compresses tool results via SmartCrusher (Rust, <50ms, ~30-55% savings)
 - Truncates old assistant responses
-- Protects recent messages (last 4 turns are never touched)
+- Protects recent messages (last 8 entries are never touched)
 - Menu bar applet shows live stats (mushroom icon)
 - Auto-starts on login, auto-restarts on crash
 
