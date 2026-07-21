@@ -13,19 +13,19 @@ PROXY_DIR="${HOME}/.kiro-proxy"
 PROXY_PORT=9090
 HEALTH_URL="http://127.0.0.1:${PROXY_PORT}/health"
 STATS_URL="http://127.0.0.1:${PROXY_PORT}/stats"
+CA_CERT="${PROXY_DIR}/certs/ca-cert.pem"
+CA_KEY="${PROXY_DIR}/certs/ca-key.pem"
 CA_BUNDLE="${PROXY_DIR}/ca-bundle.pem"
-CA_PEM="${PROXY_DIR}/ca.pem"
-MITM_CA="${PROXY_DIR}/mitmproxy-ca.pem"
 PLIST_DEST="${HOME}/Library/LaunchAgents/com.kiro-proxy.compression.plist"
 SHELL_RC="${HOME}/.zshrc"
-[[ "${SHELL}" == *bash* ]] && SHELL_RC="${HOME}/.bashrc"
+[[ "${SHELL:-zsh}" == *bash* ]] && SHELL_RC="${HOME}/.bashrc"
 
 # Colors
 if [[ -t 1 ]]; then
     GREEN='\033[0;32m'; YELLOW='\033[0;33m'; RED='\033[0;31m'
     BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
 else
-    GREEN='' YELLOW='' RED='' BOLD='' DIM='' NC=''
+    GREEN=''; YELLOW=''; RED=''; BOLD=''; DIM=''; NC=''
 fi
 
 pass()  { echo -e "  ${GREEN}✓${NC} $*"; ((PASSED++)); }
@@ -48,11 +48,11 @@ else
     hint "Run: launchctl load ${PLIST_DEST}"
 fi
 
-if pgrep -f "mitmdump.*${PROXY_PORT}" > /dev/null 2>&1; then
-    PID=$(pgrep -f "mitmdump.*${PROXY_PORT}" | head -1)
-    pass "mitmdump running (PID ${PID})"
+if pgrep -f "connect_proxy.py.*${PROXY_PORT}" > /dev/null 2>&1; then
+    PID=$(pgrep -f "connect_proxy.py.*${PROXY_PORT}" | head -1)
+    pass "Proxy process running (PID ${PID})"
 else
-    fail "mitmdump not running"
+    fail "Proxy process not running"
     hint "Check: tail -20 ${PROXY_DIR}/logs/proxy.err"
 fi
 
@@ -68,21 +68,20 @@ echo ""
 # --- 2. Certificates ---
 echo -e "${BOLD}Certificates${NC}"
 
-if [[ -f "${CA_PEM}" ]]; then
-    EXPIRY=$(openssl x509 -in "${CA_PEM}" -noout -enddate 2>/dev/null | cut -d= -f2)
+if [[ -f "${CA_CERT}" ]]; then
+    EXPIRY=$(openssl x509 -in "${CA_CERT}" -noout -enddate 2>/dev/null | cut -d= -f2)
     if [[ -n "${EXPIRY}" ]]; then
-        # Check if expired
-        if openssl x509 -in "${CA_PEM}" -noout -checkend 0 2>/dev/null; then
+        if openssl x509 -in "${CA_CERT}" -noout -checkend 0 2>/dev/null; then
             pass "CA certificate valid (expires: ${EXPIRY})"
         else
             fail "CA certificate EXPIRED (${EXPIRY})"
-            hint "Delete ${PROXY_DIR}/ca.key and ca.pem, then re-run install.sh"
+            hint "Re-run the installer to regenerate certificates"
         fi
     else
         fail "Cannot read CA certificate"
     fi
 else
-    fail "CA certificate not found at ${CA_PEM}"
+    fail "CA certificate not found at ${CA_CERT}"
     hint "Re-run the installer"
 fi
 
@@ -98,20 +97,14 @@ else
     fail "CA bundle not found at ${CA_BUNDLE}"
 fi
 
-if [[ -f "${MITM_CA}" ]]; then
-    pass "mitmproxy CA file exists"
-else
-    fail "mitmproxy CA file missing (${MITM_CA})"
-fi
-
 # Check CA key permissions
-if [[ -f "${PROXY_DIR}/ca.key" ]]; then
-    KEY_PERMS=$(stat -f "%Lp" "${PROXY_DIR}/ca.key" 2>/dev/null)
+if [[ -f "${CA_KEY}" ]]; then
+    KEY_PERMS=$(stat -f "%Lp" "${CA_KEY}" 2>/dev/null)
     if [[ "${KEY_PERMS}" == "600" ]]; then
         pass "CA key permissions correct (600)"
     else
         fail "CA key permissions too open (${KEY_PERMS}, should be 600)"
-        hint "Run: chmod 600 ${PROXY_DIR}/ca.key"
+        hint "Run: chmod 600 ${CA_KEY}"
     fi
 fi
 
@@ -142,59 +135,28 @@ fi
 # Shell config
 if grep -q "HTTPS_PROXY.*127.0.0.1:${PROXY_PORT}" "${SHELL_RC}" 2>/dev/null; then
     pass "HTTPS_PROXY in ${SHELL_RC}"
+elif grep -q "kiro-proxy-wrapper >>>" "${SHELL_RC}" 2>/dev/null; then
+    pass "Wrapper mode alias in ${SHELL_RC}"
 else
-    fail "HTTPS_PROXY not found in ${SHELL_RC}"
+    fail "No proxy routing found in ${SHELL_RC}"
 fi
 
 if grep -q 'SSL_CERT_FILE.*kiro-proxy' "${SHELL_RC}" 2>/dev/null; then
-    # Check for the tilde bug
     if grep -q 'SSL_CERT_FILE="~/' "${SHELL_RC}" 2>/dev/null; then
         fail "SSL_CERT_FILE uses literal ~ (won't expand in quotes)"
         hint "Change to: export SSL_CERT_FILE=\"\${HOME}/.kiro-proxy/ca-bundle.pem\""
     else
         pass "SSL_CERT_FILE in ${SHELL_RC}"
     fi
+elif grep -q "kiro-proxy-wrapper >>>" "${SHELL_RC}" 2>/dev/null; then
+    pass "Wrapper mode handles SSL_CERT_FILE internally"
 else
     fail "SSL_CERT_FILE not found in ${SHELL_RC}"
 fi
 
-# launchctl env
-LAUNCHCTL_PROXY=$(launchctl getenv HTTPS_PROXY 2>/dev/null || echo "")
-if [[ "${LAUNCHCTL_PROXY}" == "http://127.0.0.1:${PROXY_PORT}" ]]; then
-    pass "launchctl HTTPS_PROXY set (covers GUI apps)"
-else
-    warn "launchctl HTTPS_PROXY not set (IDE sessions may not route through proxy until reboot)"
-    hint "Run: launchctl setenv HTTPS_PROXY http://127.0.0.1:${PROXY_PORT}"
-fi
-
-LAUNCHCTL_CERT=$(launchctl getenv SSL_CERT_FILE 2>/dev/null || echo "")
-if [[ "${LAUNCHCTL_CERT}" == "${CA_BUNDLE}" ]]; then
-    pass "launchctl SSL_CERT_FILE set"
-else
-    warn "launchctl SSL_CERT_FILE not set"
-    hint "Run: launchctl setenv SSL_CERT_FILE ${CA_BUNDLE}"
-fi
-
 echo ""
 
-# --- 4. tao integration ---
-echo -e "${BOLD}Tao integration${NC}"
-
-TAO_ENV="${HOME}/.tao/env"
-if [[ -f "${TAO_ENV}" ]]; then
-    if grep -q "HTTPS_PROXY" "${TAO_ENV}" && grep -q "SSL_CERT_FILE" "${TAO_ENV}"; then
-        pass "Proxy vars in ${TAO_ENV}"
-    else
-        warn "Proxy vars missing from ${TAO_ENV}"
-        hint "Add HTTPS_PROXY and SSL_CERT_FILE to ${TAO_ENV} for ACP coverage"
-    fi
-else
-    pass "tao not installed (skipped)"
-fi
-
-echo ""
-
-# --- 5. Connectivity test ---
+# --- 4. Connectivity test ---
 echo -e "${BOLD}Connectivity${NC}"
 
 if curl -s --max-time 2 "${HEALTH_URL}" > /dev/null 2>&1; then
@@ -225,15 +187,17 @@ fi
 
 echo ""
 
-# --- 6. Stats ---
+# --- 5. Stats ---
 echo -e "${BOLD}Stats${NC}"
 
 STATS=$(curl -s --max-time 2 "${STATS_URL}" 2>/dev/null)
 if [[ -n "${STATS}" ]]; then
     TOTAL=$(echo "${STATS}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('requests_total',0))" 2>/dev/null)
     COMPRESSED=$(echo "${STATS}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('requests_compressed',0))" 2>/dev/null)
-    SAVINGS=$(echo "${STATS}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('savings_percent',0))" 2>/dev/null)
+    SAVINGS=$(echo "${STATS}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('cumulative_savings_pct',0))" 2>/dev/null)
     pass "Lifetime: ${TOTAL} requests, ${COMPRESSED} compressed, ${SAVINGS}% savings"
+else
+    warn "Could not fetch stats (proxy may not be running)"
 fi
 
 # --- Summary ---
