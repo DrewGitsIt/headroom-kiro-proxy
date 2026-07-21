@@ -9,13 +9,16 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any
 
 logger = logging.getLogger("kiro_proxy.handler")
 
 # Number of message entries (not turns — kiro alternates user/assistant)
-# to protect from compression. 8 entries ≈ 4 user/assistant turns.
-PROTECT_RECENT_ENTRIES = 8
+# Number of recent history entries to protect from compression.
+# 8 entries ≈ 4 user/assistant turns. Override via KIRO_PROXY_PROTECT_ENTRIES
+# if kiro-cli changes its turn structure (e.g., adds system messages between turns).
+PROTECT_RECENT_ENTRIES = int(os.environ.get("KIRO_PROXY_PROTECT_ENTRIES", "8"))
 
 # Minimum tool result size (chars) before compression is attempted.
 MIN_COMPRESS_CHARS = 800

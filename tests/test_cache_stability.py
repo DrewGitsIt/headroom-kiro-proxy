@@ -17,11 +17,8 @@ Run: PYTHONPATH=src python -m pytest tests/test_cache_stability.py -v
 
 import json
 import os
-import sys
 
 import pytest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from compress import compress_conversation, HEADROOM_AVAILABLE
 from kiro_translator import kiro_to_anthropic, anthropic_to_kiro

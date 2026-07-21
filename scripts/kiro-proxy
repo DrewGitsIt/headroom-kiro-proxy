@@ -31,6 +31,7 @@ usage() {
     echo "  enable           Start the proxy service"
     echo "  disable          Stop the proxy service"
     echo "  restart          Restart the proxy service"
+    echo "  config mode      Show or switch routing mode (global|wrapper)"
     echo "  telemetry on     Enable daily usage metrics upload"
     echo "  telemetry off    Disable daily usage metrics upload"
     echo "  telemetry status Show telemetry state, install ID, last report date"
@@ -182,6 +183,135 @@ cmd_restart() {
     fi
 }
 
+cmd_config() {
+    local subcmd="${1:-}"
+    local config_file="${PROXY_DIR}/config"
+    local shell_rc="${HOME}/.zshrc"
+    [[ "${SHELL}" == *bash* ]] && shell_rc="${HOME}/.bashrc"
+
+    case "${subcmd}" in
+        mode)
+            local new_mode="${2:-}"
+            if [[ -z "${new_mode}" ]]; then
+                # Show current mode
+                local current_mode="global"
+                if [[ -f "${config_file}" ]] && grep -q '^mode=' "${config_file}" 2>/dev/null; then
+                    current_mode=$(grep '^mode=' "${config_file}" | cut -d= -f2)
+                fi
+                echo -e "${BOLD}Routing mode:${NC} ${current_mode}"
+                echo ""
+                if [[ "${current_mode}" == "global" ]]; then
+                    echo "  All HTTPS traffic routes through the proxy."
+                    echo "  Non-kiro traffic passes through a CONNECT tunnel unchanged."
+                    echo "  If the proxy is down, all HTTPS tools are affected until restart."
+                else
+                    echo "  Only kiro-cli uses the proxy (via wrapper script)."
+                    echo "  Other tools are completely unaffected."
+                    echo "  If the proxy is down, kiro-cli falls back to direct connection."
+                fi
+                echo ""
+                echo "  Switch with: kiro-proxy config mode [global|wrapper]"
+                return 0
+            fi
+
+            if [[ "${new_mode}" != "global" && "${new_mode}" != "wrapper" ]]; then
+                echo "Invalid mode: ${new_mode}"
+                echo "Usage: kiro-proxy config mode [global|wrapper]"
+                return 1
+            fi
+
+            # Persist mode to config file
+            if [[ -f "${config_file}" ]]; then
+                local tmp
+                tmp=$(mktemp)
+                grep -v '^mode=' "${config_file}" > "${tmp}" || true
+                mv -f "${tmp}" "${config_file}"
+            fi
+            echo "mode=${new_mode}" >> "${config_file}"
+
+            if [[ "${new_mode}" == "global" ]]; then
+                _switch_to_global "${shell_rc}"
+            else
+                _switch_to_wrapper "${shell_rc}"
+            fi
+            ;;
+        "")
+            echo "Usage: kiro-proxy config mode [global|wrapper]"
+            echo ""
+            echo "  global   All HTTPS traffic routes through the proxy (simpler)"
+            echo "  wrapper  Only kiro-cli uses the proxy (isolated)"
+            ;;
+        *)
+            echo "Unknown config subcommand: ${subcmd}"
+            echo "Usage: kiro-proxy config mode [global|wrapper]"
+            return 1
+            ;;
+    esac
+}
+
+_switch_to_global() {
+    local shell_rc="$1"
+    local ca_bundle="${PROXY_DIR}/ca-bundle.pem"
+    local ca_cert="${PROXY_DIR}/ca-cert.pem"
+
+    # Remove wrapper alias if present
+    if grep -q '# >>> kiro-proxy-wrapper >>>' "${shell_rc}" 2>/dev/null; then
+        local tmp
+        tmp=$(mktemp)
+        sed '/# >>> kiro-proxy-wrapper >>>/,/# <<< kiro-proxy-wrapper <<</d' "${shell_rc}" > "${tmp}"
+        mv -f "${tmp}" "${shell_rc}"
+    fi
+
+    # Add global env vars if not present
+    if ! grep -q '# >>> kiro-proxy >>>' "${shell_rc}" 2>/dev/null; then
+        cat >> "${shell_rc}" << EOF
+
+# >>> kiro-proxy >>>
+export HTTPS_PROXY="http://127.0.0.1:${PROXY_PORT}"
+export SSL_CERT_FILE="${ca_bundle}"
+export NODE_EXTRA_CA_CERTS="${ca_cert}"
+# <<< kiro-proxy <<<
+EOF
+    fi
+
+    echo -e "${GREEN}●${NC} Switched to global mode"
+    echo "  All HTTPS traffic now routes through the proxy."
+    echo "  Activate in this shell: source ${shell_rc}"
+}
+
+_switch_to_wrapper() {
+    local shell_rc="$1"
+    local wrapper="${PROXY_DIR}/kiro-wrapper.sh"
+
+    # Remove global env vars if present
+    if grep -q '# >>> kiro-proxy >>>' "${shell_rc}" 2>/dev/null; then
+        local tmp
+        tmp=$(mktemp)
+        sed '/# >>> kiro-proxy >>>/,/# <<< kiro-proxy <<</d' "${shell_rc}" > "${tmp}"
+        mv -f "${tmp}" "${shell_rc}"
+    fi
+
+    # Unset env vars for current GUI session
+    launchctl unsetenv HTTPS_PROXY 2>/dev/null || true
+    launchctl unsetenv SSL_CERT_FILE 2>/dev/null || true
+    launchctl unsetenv NODE_EXTRA_CA_CERTS 2>/dev/null || true
+
+    # Add wrapper alias if not present
+    if ! grep -q '# >>> kiro-proxy-wrapper >>>' "${shell_rc}" 2>/dev/null; then
+        cat >> "${shell_rc}" << EOF
+
+# >>> kiro-proxy-wrapper >>>
+alias kiro-cli='${wrapper}'
+# <<< kiro-proxy-wrapper <<<
+EOF
+    fi
+
+    echo -e "${GREEN}●${NC} Switched to wrapper mode"
+    echo "  Only kiro-cli uses the proxy (via wrapper)."
+    echo "  Other tools are completely unaffected."
+    echo "  Activate in this shell: source ${shell_rc}"
+}
+
 cmd_telemetry() {
     local subcmd="${1:-status}"
     local config_file="${PROXY_DIR}/config"
@@ -264,6 +394,7 @@ case "${1:-}" in
     enable)    cmd_enable ;;
     disable)   cmd_disable ;;
     restart)   cmd_restart ;;
+    config)    cmd_config "${2:-}" "${3:-}" ;;
     telemetry) cmd_telemetry "${2:-status}" ;;
     -h|--help|help|"")
         usage ;;

@@ -32,9 +32,10 @@ The installer will:
 ## What it does NOT do
 
 - Modify your system keychain
-- Install system-wide proxy settings (only env vars in your shell profile)
-- Affect git, curl, npm, brew, AWS CLI, or any other tool
+- Install system-wide proxy settings (uses env vars in your shell profile or per-invocation wrapper)
 - Touch response data (responses stream back unchanged)
+
+> **Note (global mode):** In global mode, all HTTPS traffic in your shell routes through the proxy. Non-kiro traffic is passed through a transparent CONNECT tunnel with no interception — you'll see +5–55ms overhead on those requests. If you prefer complete isolation, use wrapper mode.
 
 ## Lifecycle
 
@@ -71,6 +72,23 @@ kiro-cli (with HTTPS_PROXY + SSL_CERT_FILE)
 ```
 
 The proxy CA is only trusted by processes that have `SSL_CERT_FILE` pointing to the bundle. Other tools use the normal system trust store and never see the proxy CA.
+
+### Routing modes
+
+The installer asks which routing mode to use:
+
+| Mode | How traffic reaches proxy | Blast radius if proxy down |
+|------|--------------------------|---------------------------|
+| **Global** (default) | `HTTPS_PROXY` + `SSL_CERT_FILE` env vars in shell profile. All HTTPS traffic routes through the proxy; non-kiro traffic passes through a CONNECT tunnel unchanged. | All HTTPS tools fail until launchd restarts the proxy (~2s). |
+| **Wrapper** | Per-invocation env vars via `kiro-wrapper.sh`, aliased as `kiro-cli`. Other tools never see the proxy. | Only kiro-cli affected; falls back to direct connection. |
+
+Switch at any time:
+
+```bash
+kiro-proxy config mode wrapper   # Switch to wrapper mode
+kiro-proxy config mode global    # Switch back to global
+kiro-proxy config mode           # Show current mode
+```
 
 ## Measured impact
 

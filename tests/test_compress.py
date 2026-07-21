@@ -7,11 +7,8 @@ pipeline (headroom integration).
 
 import json
 import os
-import sys
 
 import pytest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from compress import compress_conversation
 from kiro_translator import anthropic_to_kiro, kiro_to_anthropic

@@ -132,18 +132,22 @@ chmod +x "${PROXY_DIR}/kiro-proxy" \
 
 info "Downloaded to ${PROXY_DIR}/src/"
 
-# Install CLI to PATH
-CLI_DEST="/usr/local/bin/kiro-proxy"
-if [[ -w "/usr/local/bin" ]]; then
-    ln -sf "${PROXY_DIR}/kiro-proxy" "${CLI_DEST}"
-    info "Installed kiro-proxy CLI to ${CLI_DEST}"
-else
-    echo "Installing kiro-proxy CLI to ${CLI_DEST} (requires sudo)..."
-    if sudo ln -sf "${PROXY_DIR}/kiro-proxy" "${CLI_DEST}" 2>/dev/null; then
-        info "Installed kiro-proxy CLI to ${CLI_DEST}"
-    else
-        warn "Could not install CLI to PATH. Use directly: ${PROXY_DIR}/kiro-proxy"
+# Install CLI to ~/.local/bin (no sudo needed, on PATH for most setups)
+CLI_DIR="${HOME}/.local/bin"
+CLI_DEST="${CLI_DIR}/kiro-proxy"
+mkdir -p "${CLI_DIR}"
+ln -sf "${PROXY_DIR}/kiro-proxy" "${CLI_DEST}"
+info "Installed kiro-proxy CLI to ${CLI_DEST}"
+
+# Ensure ~/.local/bin is on PATH
+if [[ ":${PATH}:" != *":${CLI_DIR}:"* ]]; then
+    SHELL_RC="${HOME}/.zshrc"
+    [[ "${SHELL}" == *bash* ]] && SHELL_RC="${HOME}/.bashrc"
+    if ! grep -q '\.local/bin' "${SHELL_RC}" 2>/dev/null; then
+        echo 'export PATH="${HOME}/.local/bin:${PATH}"' >> "${SHELL_RC}"
+        info "Added ~/.local/bin to PATH in ${SHELL_RC}"
     fi
+    export PATH="${CLI_DIR}:${PATH}"
 fi
 
 # --- Step 4: Generate CA certificate ---
@@ -321,30 +325,88 @@ fi
 # --- Step 6: Configure shell environment ---
 step 6 "Configuring shell environment"
 
-PROXY_ENV_BLOCK="# >>> kiro-proxy >>>
+# Prompt for routing mode
+echo ""
+echo -e "${BOLD}Proxy routing mode:${NC}"
+echo "  [1] Global (recommended) — all HTTPS traffic routes through the proxy."
+echo "      Non-kiro traffic passes through unchanged. Simplest setup."
+echo "  [2] Wrapper — only kiro-cli uses the proxy. Other tools unaffected."
+echo "      Requires a shell alias for kiro-cli."
+echo ""
+read -r -p "Choose [1/2] (default: 1): " MODE_CHOICE
+
+PROXY_MODE="global"
+if [[ "${MODE_CHOICE}" == "2" ]]; then
+    PROXY_MODE="wrapper"
+fi
+
+# Persist mode to config
+CONFIG_FILE="${PROXY_DIR}/config"
+if [[ -f "${CONFIG_FILE}" ]]; then
+    TMP=$(mktemp)
+    grep -v '^mode=' "${CONFIG_FILE}" > "${TMP}" || true
+    mv -f "${TMP}" "${CONFIG_FILE}"
+fi
+echo "mode=${PROXY_MODE}" >> "${CONFIG_FILE}"
+
+if [[ "${PROXY_MODE}" == "global" ]]; then
+    # --- Global mode: env vars in shell profile ---
+    PROXY_ENV_BLOCK="# >>> kiro-proxy >>>
 export HTTPS_PROXY=\"http://127.0.0.1:${PROXY_PORT}\"
 export SSL_CERT_FILE=\"${CA_BUNDLE}\"
 export NODE_EXTRA_CA_CERTS=\"${CERT_DIR}/ca-cert.pem\"
 # <<< kiro-proxy <<<"
 
-# Only add if not already present
-if ! grep -q "kiro-proxy >>>" "${SHELL_RC}" 2>/dev/null; then
-    echo "" >> "${SHELL_RC}"
-    echo "${PROXY_ENV_BLOCK}" >> "${SHELL_RC}"
-    info "Added proxy env vars to ${SHELL_RC}"
+    # Only add if not already present
+    if ! grep -q "kiro-proxy >>>" "${SHELL_RC}" 2>/dev/null; then
+        echo "" >> "${SHELL_RC}"
+        echo "${PROXY_ENV_BLOCK}" >> "${SHELL_RC}"
+        info "Added proxy env vars to ${SHELL_RC}"
+    else
+        info "Shell config already has proxy env vars"
+    fi
+
+    # Set for current GUI session
+    launchctl setenv HTTPS_PROXY "http://127.0.0.1:${PROXY_PORT}" 2>/dev/null || true
+    launchctl setenv SSL_CERT_FILE "${CA_BUNDLE}" 2>/dev/null || true
+    launchctl setenv NODE_EXTRA_CA_CERTS "${CERT_DIR}/ca-cert.pem" 2>/dev/null || true
+
+    # Export for the self-test below
+    export HTTPS_PROXY="http://127.0.0.1:${PROXY_PORT}"
+    export SSL_CERT_FILE="${CA_BUNDLE}"
+    export NODE_EXTRA_CA_CERTS="${CERT_DIR}/ca-cert.pem"
+
+    info "Routing mode: global (all HTTPS traffic through proxy)"
+
 else
-    info "Shell config already has proxy env vars"
+    # --- Wrapper mode: alias only ---
+    WRAPPER_BLOCK="# >>> kiro-proxy-wrapper >>>
+alias kiro-cli='${PROXY_DIR}/kiro-wrapper.sh'
+# <<< kiro-proxy-wrapper <<<"
+
+    # Remove any leftover global env vars
+    if grep -q "# >>> kiro-proxy >>>" "${SHELL_RC}" 2>/dev/null; then
+        TMP=$(mktemp)
+        sed '/# >>> kiro-proxy >>>/,/# <<< kiro-proxy <<</d' "${SHELL_RC}" > "${TMP}"
+        mv -f "${TMP}" "${SHELL_RC}"
+    fi
+
+    # Add alias if not present
+    if ! grep -q "kiro-proxy-wrapper >>>" "${SHELL_RC}" 2>/dev/null; then
+        echo "" >> "${SHELL_RC}"
+        echo "${WRAPPER_BLOCK}" >> "${SHELL_RC}"
+        info "Added kiro-cli wrapper alias to ${SHELL_RC}"
+    else
+        info "Shell config already has wrapper alias"
+    fi
+
+    # Export for the self-test below (wrapper mode still needs these for the test)
+    export HTTPS_PROXY="http://127.0.0.1:${PROXY_PORT}"
+    export SSL_CERT_FILE="${CA_BUNDLE}"
+    export NODE_EXTRA_CA_CERTS="${CERT_DIR}/ca-cert.pem"
+
+    info "Routing mode: wrapper (only kiro-cli uses the proxy)"
 fi
-
-# Set for current GUI session
-launchctl setenv HTTPS_PROXY "http://127.0.0.1:${PROXY_PORT}" 2>/dev/null || true
-launchctl setenv SSL_CERT_FILE "${CA_BUNDLE}" 2>/dev/null || true
-launchctl setenv NODE_EXTRA_CA_CERTS "${CERT_DIR}/ca-cert.pem" 2>/dev/null || true
-
-# Export for the self-test below
-export HTTPS_PROXY="http://127.0.0.1:${PROXY_PORT}"
-export SSL_CERT_FILE="${CA_BUNDLE}"
-export NODE_EXTRA_CA_CERTS="${CERT_DIR}/ca-cert.pem"
 
 # Configure tao (if present) so ACP sessions also route through proxy
 TAO_ENV="${HOME}/.tao/env"
