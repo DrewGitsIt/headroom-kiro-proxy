@@ -424,6 +424,64 @@ if [[ -d "${HOME}/.tao" ]]; then
     fi
 fi
 
+# --- Step 6b: Telemetry setup (anonymous, opt-out) ---
+METRICS_SECRET_ID="kiro-proxy/metrics-reporter"
+METRICS_AWS_PROFILE="ai-platform-dev"
+
+# Generate anonymous install ID
+if [[ ! -f "${PROXY_DIR}/install_id" ]]; then
+    "${PYTHON}" -c "import os; print(os.urandom(16).hex())" > "${PROXY_DIR}/install_id"
+fi
+
+# Fetch write-only credentials from Secrets Manager (requires valid AWS SSO session)
+if [[ ! -f "${PROXY_DIR}/aws_credentials" ]]; then
+    CREDS_JSON=""
+    if command -v aws &>/dev/null; then
+        CREDS_JSON=$(aws secretsmanager get-secret-value \
+            --secret-id "${METRICS_SECRET_ID}" \
+            --profile "${METRICS_AWS_PROFILE}" \
+            --region us-east-1 \
+            --query SecretString --output text 2>/dev/null) || true
+    fi
+
+    # If no valid session, prompt user to log in
+    if [[ -z "${CREDS_JSON}" ]] && command -v aws &>/dev/null; then
+        echo ""
+        info "AWS SSO session needed to enable team metrics (one-time setup)"
+        echo -n "  Log in now? [Y/n] "
+        read -r TELEMETRY_CHOICE
+        if [[ "${TELEMETRY_CHOICE}" =~ ^[Nn] ]]; then
+            info "Telemetry skipped. Enable anytime: aws sso login --profile ${METRICS_AWS_PROFILE} && kiro-proxy update"
+        else
+            echo -e "  Running: ${BOLD}aws sso login --profile ${METRICS_AWS_PROFILE}${NC}"
+            echo ""
+            aws sso login --profile "${METRICS_AWS_PROFILE}" 2>/dev/null && \
+                CREDS_JSON=$(aws secretsmanager get-secret-value \
+                    --secret-id "${METRICS_SECRET_ID}" \
+                    --profile "${METRICS_AWS_PROFILE}" \
+                    --region us-east-1 \
+                    --query SecretString --output text 2>/dev/null) || true
+        fi
+    fi
+
+    if [[ -n "${CREDS_JSON}" ]]; then
+        "${PYTHON}" -c "
+import json, sys
+creds = json.loads(sys.argv[1])
+print('[default]')
+print(f'aws_access_key_id = {creds[\"aws_access_key_id\"]}')
+print(f'aws_secret_access_key = {creds[\"aws_secret_access_key\"]}')
+print(f'region = {creds.get(\"region\", \"us-east-1\")}')
+" "${CREDS_JSON}" > "${PROXY_DIR}/aws_credentials"
+        chmod 600 "${PROXY_DIR}/aws_credentials"
+        info "Anonymous usage stats (bytes saved, tokens saved) reported daily"
+        info "No conversation content is ever sent. Opt out: kiro-proxy telemetry off"
+    else
+        warn "Telemetry not configured (SSO login failed or aws CLI not installed)"
+        info "To enable later: aws sso login --profile ${METRICS_AWS_PROFILE} && kiro-proxy update"
+    fi
+fi
+
 # --- Step 7: End-to-end verification ---
 step 7 "Verifying kiro-cli works through proxy"
 
