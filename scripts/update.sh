@@ -52,14 +52,20 @@ info "Upgraded headroom-ai"
 
 # 2. Download latest source
 download "${GITHUB_RAW}/src/connect_proxy.py" "${PROXY_DIR}/src/connect_proxy.py"
+download "${GITHUB_RAW}/src/proxy.py"         "${PROXY_DIR}/src/proxy.py"
+download "${GITHUB_RAW}/src/interceptor.py"   "${PROXY_DIR}/src/interceptor.py"
+download "${GITHUB_RAW}/src/stats.py"         "${PROXY_DIR}/src/stats.py"
+download "${GITHUB_RAW}/src/reporter.py"      "${PROXY_DIR}/src/reporter.py"
 download "${GITHUB_RAW}/src/handler.py"       "${PROXY_DIR}/src/handler.py"
 download "${GITHUB_RAW}/src/applet.py"        "${PROXY_DIR}/src/applet.py"
 download "${GITHUB_RAW}/scripts/kiro-proxy"   "${PROXY_DIR}/kiro-proxy"
+download "${GITHUB_RAW}/scripts/kiro-wrapper.sh" "${PROXY_DIR}/kiro-wrapper.sh"
 download "${GITHUB_RAW}/scripts/doctor.sh"    "${PROXY_DIR}/doctor.sh"
 download "${GITHUB_RAW}/scripts/update.sh"    "${PROXY_DIR}/update.sh"
 download "${GITHUB_RAW}/scripts/uninstall.sh" "${PROXY_DIR}/uninstall.sh"
 
 chmod +x "${PROXY_DIR}/kiro-proxy" \
+         "${PROXY_DIR}/kiro-wrapper.sh" \
          "${PROXY_DIR}/doctor.sh" \
          "${PROXY_DIR}/update.sh" \
          "${PROXY_DIR}/uninstall.sh"
