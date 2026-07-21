@@ -24,13 +24,16 @@ usage() {
     echo "Usage: kiro-proxy <command>"
     echo ""
     echo "Commands:"
-    echo "  status      Show proxy health and compression stats"
-    echo "  logs        Tail proxy logs (Ctrl-C to stop)"
-    echo "  update      Pull latest compression logic from GitHub"
-    echo "  uninstall   Remove proxy, restore shell config"
-    echo "  enable      Start the proxy service"
-    echo "  disable     Stop the proxy service"
-    echo "  restart     Restart the proxy service"
+    echo "  status           Show proxy health and compression stats"
+    echo "  logs             Tail proxy logs (Ctrl-C to stop)"
+    echo "  update           Pull latest compression logic from GitHub"
+    echo "  uninstall        Remove proxy, restore shell config"
+    echo "  enable           Start the proxy service"
+    echo "  disable          Stop the proxy service"
+    echo "  restart          Restart the proxy service"
+    echo "  telemetry on     Enable daily usage metrics upload"
+    echo "  telemetry off    Disable daily usage metrics upload"
+    echo "  telemetry status Show telemetry state, install ID, last report date"
     echo ""
     echo "Config:  ${PROXY_DIR}/"
     echo "Logs:    ${PROXY_DIR}/logs/"
@@ -179,6 +182,79 @@ cmd_restart() {
     fi
 }
 
+cmd_telemetry() {
+    local subcmd="${1:-status}"
+    local config_file="${PROXY_DIR}/config"
+    local install_id_file="${PROXY_DIR}/install_id"
+    local last_date_file="${PROXY_DIR}/last_reported_date"
+
+    case "${subcmd}" in
+        off)
+            mkdir -p "${PROXY_DIR}"
+            # Remove any existing telemetry line then append the opt-out line.
+            if [[ -f "${config_file}" ]]; then
+                # Use a temp file to avoid in-place sed portability issues on macOS.
+                local tmp
+                tmp=$(mktemp)
+                grep -v '^telemetry=' "${config_file}" > "${tmp}" || true
+                mv -f "${tmp}" "${config_file}"
+            fi
+            echo "telemetry=false" >> "${config_file}"
+            echo "Telemetry disabled. No usage metrics will be uploaded."
+            echo "Re-enable with: kiro-proxy telemetry on"
+            ;;
+        on)
+            if [[ -f "${config_file}" ]]; then
+                local tmp
+                tmp=$(mktemp)
+                grep -v '^telemetry=' "${config_file}" > "${tmp}" || true
+                mv -f "${tmp}" "${config_file}"
+            fi
+            echo "Telemetry enabled. Daily usage metrics will be uploaded."
+            echo "Disable with: kiro-proxy telemetry off"
+            ;;
+        status)
+            # Determine enabled/disabled state
+            local telemetry_state="enabled"
+            if [[ -f "${config_file}" ]] && grep -q '^telemetry=false' "${config_file}" 2>/dev/null; then
+                telemetry_state="disabled"
+            fi
+
+            # Read install ID
+            local install_id="(not yet generated)"
+            if [[ -f "${install_id_file}" ]]; then
+                install_id=$(tr -d '[:space:]' < "${install_id_file}")
+            fi
+
+            # Read last reported date
+            local last_date="(never)"
+            if [[ -f "${last_date_file}" ]]; then
+                last_date=$(tr -d '[:space:]' < "${last_date_file}")
+            fi
+
+            echo -e "${BOLD}Telemetry${NC}"
+            echo "  State:       ${telemetry_state}"
+            echo "  Install ID:  ${install_id}"
+            echo "  Last report: ${last_date}"
+            if [[ -f "${PROXY_DIR}/last_report.json" ]]; then
+                echo "  Last report data: ${PROXY_DIR}/last_report.json"
+            fi
+            echo ""
+            if [[ "${telemetry_state}" == "enabled" ]]; then
+                echo "Uploads one JSON record per day to S3 (no PII)."
+                echo "Disable with: kiro-proxy telemetry off"
+            else
+                echo "Re-enable with: kiro-proxy telemetry on"
+            fi
+            ;;
+        *)
+            echo "Unknown telemetry subcommand: ${subcmd}"
+            echo "Usage: kiro-proxy telemetry [on|off|status]"
+            return 1
+            ;;
+    esac
+}
+
 # --- Main dispatch ---
 case "${1:-}" in
     status)    cmd_status ;;
@@ -188,6 +264,7 @@ case "${1:-}" in
     enable)    cmd_enable ;;
     disable)   cmd_disable ;;
     restart)   cmd_restart ;;
+    telemetry) cmd_telemetry "${2:-status}" ;;
     -h|--help|help|"")
         usage ;;
     *)

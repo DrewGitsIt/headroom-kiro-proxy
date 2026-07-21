@@ -20,7 +20,19 @@ import time
 from pathlib import Path
 from typing import Any
 
-from handler import compress_kiro_request
+# --- Fail-safe imports ---
+# The proxy MUST start and serve CONNECT tunnels even if every optional
+# component fails to load. Compression is nice-to-have; connectivity is
+# non-negotiable.
+
+_COMPRESSION_AVAILABLE = False
+_import_err: Exception | None = None
+try:
+    from handler import compress_kiro_request
+    _COMPRESSION_AVAILABLE = True
+except Exception as _exc:
+    _import_err = _exc
+    compress_kiro_request = None  # type: ignore[assignment]
 
 logger = logging.getLogger("kiro_proxy.connect")
 
@@ -251,6 +263,8 @@ async def _intercept_kiro(
     _stats["last_request_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
     try:
+        if not _COMPRESSION_AVAILABLE:
+            raise RuntimeError("compression unavailable")
         compressed_body, compression_stats = compress_kiro_request(body)
         if len(compressed_body) < len(body):
             _stats["requests_compressed"] += 1
@@ -489,11 +503,16 @@ def _make_server_ssl_context() -> ssl.SSLContext | None:
     key_path = Path.home() / ".kiro-proxy" / "key.pem"
 
     if not cert_path.exists() or not key_path.exists():
+        logger.warning("TLS certs not found at %s — running in passthrough mode", cert_path.parent)
         return None
 
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    ctx.load_cert_chain(str(cert_path), str(key_path))
-    return ctx
+    try:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(str(cert_path), str(key_path))
+        return ctx
+    except (ssl.SSLError, OSError) as exc:
+        logger.error("Failed to load TLS certs: %s — running in passthrough mode", exc)
+        return None
 
 
 async def start_connect_proxy(port: int = 9090) -> asyncio.Server:
@@ -502,7 +521,64 @@ async def start_connect_proxy(port: int = 9090) -> asyncio.Server:
     )
     addr = server.sockets[0].getsockname()
     logger.info("kiro-proxy listening on %s:%d (pid=%d)", addr[0], addr[1], os.getpid())
+
+    # Log startup health so operator knows what's working
+    if not _COMPRESSION_AVAILABLE:
+        logger.warning("DEGRADED: compression unavailable (handler import failed: %s)", _import_err)
+        logger.warning("DEGRADED: proxy will pass traffic through without compression")
+    ssl_ctx = _make_server_ssl_context()
+    if ssl_ctx is None:
+        logger.warning("DEGRADED: TLS interception unavailable — all traffic will tunnel raw")
+    else:
+        logger.info("TLS interception ready (cert loaded)")
+    if _COMPRESSION_AVAILABLE:
+        logger.info("Compression engine ready")
+
     return server
+
+
+def _proxy_version() -> str:
+    """Return the proxy version string, falling back to 'unknown'."""
+    version_file = Path(__file__).parent.parent / "VERSION"
+    if version_file.exists():
+        return version_file.read_text().strip() or "unknown"
+    return "unknown"
+
+
+async def _daily_reporter() -> None:
+    """Background task: upload daily metrics once per day.
+
+    Waits 5 min after startup so the proxy is stable before the first
+    attempt, then polls hourly. All exceptions are caught and logged at
+    debug level; this coroutine must never crash the proxy.
+    """
+    _STARTUP_DELAY_S = 5 * 60    # 5 minutes
+    _CHECK_INTERVAL_S = 60 * 60  # 1 hour
+
+    logger.debug("reporter: daily reporter task started")
+    await asyncio.sleep(_STARTUP_DELAY_S)
+
+    version = _proxy_version()
+
+    while True:
+        try:
+            # Lazy import — reporter.py may not be installed yet
+            try:
+                from reporter import maybe_report
+            except ImportError:
+                logger.debug("reporter: reporter module not available, skipping")
+                return  # exit task cleanly if reporter not installed
+            # get_stats() is synchronous and cheap; run inline.
+            stats = get_stats()
+            # maybe_report runs blocking I/O (file + HTTP). Off-load to a
+            # thread so we don't stall the event loop.
+            await asyncio.get_event_loop().run_in_executor(
+                None, maybe_report, stats, version
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("reporter: unexpected error in daily reporter: %s", exc)
+
+        await asyncio.sleep(_CHECK_INTERVAL_S)
 
 
 def main() -> None:
@@ -521,8 +597,17 @@ def main() -> None:
 
     async def run() -> None:
         server = await start_connect_proxy(port=args.port)
-        async with server:
-            await server.serve_forever()
+        # Start background metrics reporter; cancel it cleanly on shutdown.
+        reporter_task = asyncio.create_task(_daily_reporter(), name="daily_reporter")
+        try:
+            async with server:
+                await server.serve_forever()
+        finally:
+            reporter_task.cancel()
+            try:
+                await reporter_task
+            except asyncio.CancelledError:
+                pass
 
     asyncio.run(run())
 
