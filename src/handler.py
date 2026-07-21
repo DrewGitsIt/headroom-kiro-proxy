@@ -14,10 +14,12 @@ from typing import Any
 
 logger = logging.getLogger("kiro_proxy.handler")
 
-# Number of message entries (not turns — kiro alternates user/assistant)
 # Number of recent history entries to protect from compression.
-# 8 entries ≈ 4 user/assistant turns. Override via KIRO_PROXY_PROTECT_ENTRIES
-# if kiro-cli changes its turn structure (e.g., adds system messages between turns).
+# NOTE: "entries" are individual history items, NOT logical turns. In kiro's
+# wire format a single logical turn may span 2-4 entries (user → assistant
+# with tool_use → user with tool_result → assistant reply). So 8 entries
+# protects roughly 2-4 logical turns depending on tool use density.
+# Override via KIRO_PROXY_PROTECT_ENTRIES env var.
 PROTECT_RECENT_ENTRIES = int(os.environ.get("KIRO_PROXY_PROTECT_ENTRIES", "8"))
 
 # Minimum tool result size (chars) before compression is attempted.
@@ -46,6 +48,9 @@ def compress_kiro_request(body: bytes) -> tuple[bytes, dict[str, int]]:
         req = json.loads(body)
     except (json.JSONDecodeError, UnicodeDecodeError):
         logger.debug("body is not valid JSON, passing through")
+        return body, stats
+
+    if not isinstance(req, dict):
         return body, stats
 
     if "conversationState" not in req:
@@ -81,14 +86,18 @@ def _compress_user_message(
 ) -> None:
     """Compress a kiro userInputMessage in-place."""
     # --- Strip old images ---
+    # Guard: skip if already annotated (idempotency — prevents annotation
+    # stacking on retry or multiple compression passes).
     images = um.get("images")
+    existing_content = um.get("content") or ""
     if images and isinstance(images, list) and len(images) > 0:
-        count = len(images)
-        turn_num = turn_index // 2 + 1
-        annotation = f"\n[{count} screenshot(s) from turn {turn_num} removed]"
-        um["content"] = (um.get("content") or "") + annotation
+        if "screenshot(s) from turn" not in existing_content:
+            count = len(images)
+            turn_num = turn_index // 2 + 1
+            annotation = f"\n[{count} screenshot(s) from turn {turn_num} removed]"
+            um["content"] = existing_content + annotation
+            stats["images_stripped"] += count
         um["images"] = []
-        stats["images_stripped"] += count
 
     # --- Compress tool results ---
     ctx = um.get("userInputMessageContext")

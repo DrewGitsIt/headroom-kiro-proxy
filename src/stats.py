@@ -67,6 +67,31 @@ def record_compression(original_bytes: int, compressed_bytes: int) -> None:
         _stats["savings_pct_history"] = _stats["savings_pct_history"][-_MAX_HISTORY:]
 
 
+def reset_stats() -> None:
+    """Reset all stats to initial values. Used by test fixtures."""
+    _stats.update({
+        "requests_total": 0,
+        "requests_compressed": 0,
+        "tunnels_passthrough": 0,
+        "bytes_request_original": 0,
+        "bytes_request_sent": 0,
+        "bytes_response_total": 0,
+        "images_stripped": 0,
+        "tool_results_compressed": 0,
+        "assistant_responses_truncated": 0,
+        "errors_fallen_through": 0,
+        "last_request_at": "",
+        "last_ttfb_ms": 0,
+        "last_original_kb": 0.0,
+        "last_compressed_kb": 0.0,
+        "last_savings_pct": 0.0,
+        "last_response_size_kb": 0.0,
+        "ttfb_ms_history": [],
+        "response_time_ms_history": [],
+        "savings_pct_history": [],
+    })
+
+
 def get_stats() -> dict[str, Any]:
     """Return a snapshot of all proxy stats for /stats and reporter."""
     bytes_orig = _stats["bytes_request_original"]
