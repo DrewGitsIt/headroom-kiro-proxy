@@ -538,22 +538,44 @@ if [[ "${PROXY_SECS}" -gt 0 && "${BASELINE_SECS}" -gt 0 ]]; then
     fi
 fi
 
+# --- Verify installation works ---
+echo ""
+echo -e "${BOLD}=== Verifying installation ===${NC}"
+echo ""
+
+# Run kiro-proxy status in a subshell with the new PATH
+VERIFY_OUTPUT=$(PATH="${HOME}/.local/bin:${PATH}" kiro-proxy status 2>&1) || true
+if echo "${VERIFY_OUTPUT}" | grep -q "●"; then
+    echo -e "  ${GREEN}✓${NC} kiro-proxy is running and responding"
+    echo ""
+    echo "${VERIFY_OUTPUT}" | sed 's/^/    /'
+else
+    echo -e "  ${YELLOW}⚠${NC} Could not verify — proxy may still be starting"
+fi
+
 # --- Done ---
 echo ""
-echo -e "${BOLD}=== Installation complete ===${NC}"
+echo -e "${BOLD}╔══════════════════════════════════════════════════════════╗${NC}"
+echo -e "${BOLD}║              Installation complete!                      ║${NC}"
+echo -e "${BOLD}╠══════════════════════════════════════════════════════════╣${NC}"
+echo -e "${BOLD}║                                                          ║${NC}"
+echo -e "${BOLD}║${NC}  ${GREEN}▶ Open a new terminal${NC}, then run:                        ${BOLD}║${NC}"
+echo -e "${BOLD}║${NC}                                                          ${BOLD}║${NC}"
+echo -e "${BOLD}║${NC}      kiro-proxy status                                    ${BOLD}║${NC}"
+echo -e "${BOLD}║${NC}                                                          ${BOLD}║${NC}"
+echo -e "${BOLD}║${NC}  Or to activate in this shell:                            ${BOLD}║${NC}"
+echo -e "${BOLD}║${NC}      source ${SHELL_RC}$(printf '%*s' $((34 - ${#SHELL_RC})) '')${BOLD}║${NC}"
+echo -e "${BOLD}║${NC}                                                          ${BOLD}║${NC}"
+echo -e "${BOLD}╚══════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo "  Proxy:   127.0.0.1:${PROXY_PORT} (running, auto-starts on login)"
 echo "  Applet:  Menu bar mushroom icon (shows live stats)"
-echo "  Venv:    ${VENV_DIR}"
-echo ""
-echo "  To activate in this shell:  source ${SHELL_RC}"
 echo ""
 echo "  kiro-proxy status      Show health and compression stats"
 echo "  kiro-proxy logs        Tail proxy logs"
 echo "  kiro-proxy disable     Temporarily stop compression"
-echo "  kiro-proxy enable      Re-enable compression"
 echo "  kiro-proxy update      Pull latest compression logic"
 echo "  kiro-proxy uninstall   Clean removal"
 echo ""
-echo "  All kiro-cli sessions will now be compressed (~40-55% savings)."
+echo "  All kiro-cli sessions are now compressed (~40-55% savings)."
 echo "  Other tools (git, curl, npm, brew, AWS) are unaffected."

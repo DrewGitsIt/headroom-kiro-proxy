@@ -8,7 +8,7 @@ A local compression proxy that strips old screenshots, crushes verbose tool resu
 curl -sSL --noproxy '*' https://raw.githubusercontent.com/DrewGitsIt/headroom-kiro-proxy/main/scripts/install.sh | bash
 ```
 
-Then open a new terminal (or `source ~/.zshrc`). That's it — all kiro sessions are now compressed.
+Then open a new terminal. That's it — all kiro sessions are now compressed.
 
 The installer will:
 1. Test that kiro-cli works (baseline)
