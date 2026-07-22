@@ -3,9 +3,9 @@
 #
 # Reverses everything install.sh did:
 #   1. Stops and removes both LaunchAgents (proxy + applet)
-#   2. Removes env vars from shell config
+#   2. Removes env vars from shell config (global AND wrapper mode)
 #   3. Clears launchctl env vars
-#   4. Removes CLI from PATH
+#   4. Removes CLI from PATH (~/.local/bin)
 #   5. Deletes ~/.kiro-proxy/ (including venv)
 #
 # After uninstall, kiro-cli works exactly as before (direct to AWS).
@@ -17,8 +17,12 @@ PLIST_LABEL="com.kiro-proxy.compression"
 PLIST_DEST="${HOME}/Library/LaunchAgents/${PLIST_LABEL}.plist"
 APPLET_PLIST_LABEL="com.kiro-proxy.applet"
 APPLET_PLIST_DEST="${HOME}/Library/LaunchAgents/${APPLET_PLIST_LABEL}.plist"
-SHELL_RC="${HOME}/.zshrc"
-[[ "${SHELL}" == *bash* ]] && SHELL_RC="${HOME}/.bashrc"
+
+# Determine shell config file (guard against unset SHELL in minimal envs)
+case "${SHELL:-/bin/zsh}" in
+    *bash*) SHELL_RC="${HOME}/.bashrc" ;;
+    *)      SHELL_RC="${HOME}/.zshrc"  ;;
+esac
 
 # Colors
 if [[ -t 1 ]]; then
@@ -59,13 +63,26 @@ done
 
 info "Removed LaunchAgents"
 
-# 2. Remove env vars from shell config
-if grep -q "kiro-proxy >>>" "${SHELL_RC}" 2>/dev/null; then
-    # Remove the block between markers
+# 2. Remove env vars from shell config — handles both global and wrapper mode
+if grep -q "# >>> kiro-proxy >>>" "${SHELL_RC}" 2>/dev/null; then
     sed -i '' '/# >>> kiro-proxy >>>/,/# <<< kiro-proxy <<</d' "${SHELL_RC}"
-    info "Removed proxy env vars from ${SHELL_RC}"
-else
-    info "No proxy env vars found in ${SHELL_RC}"
+    info "Removed proxy env vars (global mode) from ${SHELL_RC}"
+fi
+
+if grep -q "# >>> kiro-proxy-wrapper >>>" "${SHELL_RC}" 2>/dev/null; then
+    sed -i '' '/# >>> kiro-proxy-wrapper >>>/,/# <<< kiro-proxy-wrapper <<</d' "${SHELL_RC}"
+    info "Removed kiro-cli alias (wrapper mode) from ${SHELL_RC}"
+fi
+
+# Remove PATH export for ~/.local/bin if we added it
+if grep -q "# kiro-proxy: add ~/.local/bin" "${SHELL_RC}" 2>/dev/null; then
+    sed -i '' '/# kiro-proxy: add ~\/.local\/bin/d' "${SHELL_RC}"
+    sed -i '' '\|export PATH="${HOME}/\.local/bin|d' "${SHELL_RC}"
+    info "Removed PATH export from ${SHELL_RC}"
+fi
+
+if ! grep -q "kiro-proxy" "${SHELL_RC}" 2>/dev/null; then
+    info "Shell config clean (no kiro-proxy references remain)"
 fi
 
 # 2b. Remove from tao env (if present)
@@ -84,15 +101,21 @@ launchctl unsetenv SSL_CERT_FILE 2>/dev/null || true
 launchctl unsetenv NODE_EXTRA_CA_CERTS 2>/dev/null || true
 info "Cleared launchctl environment variables"
 
-# 4. Remove CLI from PATH
-CLI_DEST="/usr/local/bin/kiro-proxy"
-if [[ -L "${CLI_DEST}" ]]; then
-    if [[ -w "$(dirname "${CLI_DEST}")" ]]; then
-        rm -f "${CLI_DEST}"
+# 4. Remove CLI symlink from ~/.local/bin
+CLI_DEST="${HOME}/.local/bin/kiro-proxy"
+if [[ -L "${CLI_DEST}" || -f "${CLI_DEST}" ]]; then
+    rm -f "${CLI_DEST}"
+    info "Removed kiro-proxy CLI from ~/.local/bin"
+fi
+# Also check legacy location (/usr/local/bin) from older installs
+LEGACY_CLI="/usr/local/bin/kiro-proxy"
+if [[ -L "${LEGACY_CLI}" ]]; then
+    if [[ -w "$(dirname "${LEGACY_CLI}")" ]]; then
+        rm -f "${LEGACY_CLI}"
     else
-        sudo rm -f "${CLI_DEST}" 2>/dev/null || true
+        sudo rm -f "${LEGACY_CLI}" 2>/dev/null || true
     fi
-    info "Removed kiro-proxy CLI from PATH"
+    info "Removed legacy CLI from /usr/local/bin"
 fi
 
 # 5. Delete ~/.kiro-proxy/ (includes venv, source, certs, logs)

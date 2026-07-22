@@ -16,8 +16,12 @@ $GITHUB_RAW = 'https://raw.githubusercontent.com/DrewGitsIt/headroom-kiro-proxy/
 
 $SOURCE_FILES = @(
     'src/connect_proxy.py',
+    'src/proxy.py',
+    'src/interceptor.py',
+    'src/stats.py',
+    'src/reporter.py',
     'src/handler.py',
-    'src/generate_certs.py'
+    'src/applet.py'
 )
 
 $MGMT_SCRIPTS = @('update.ps1', 'uninstall.ps1', 'kiro-proxy.ps1')

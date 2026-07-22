@@ -7,9 +7,9 @@
 #   1. Verifies Python 3.10+ and kiro-cli are present
 #   2. Baseline-tests kiro-cli (without proxy)
 #   3. Creates a venv at %USERPROFILE%\.kiro-proxy\.venv
-#   4. Installs headroom-ai, cryptography, certifi into the venv
+#   4. Installs headroom-ai, cryptography, certifi, boto3 into the venv
 #   5. Downloads proxy source files from GitHub
-#   6. Generates CA cert + bundle via generate_certs.py
+#   6. Generates CA cert + host cert chain inline (no external script)
 #   7. Registers a Task Scheduler job (auto-start on logon, restart on failure)
 #   8. Sets user-scope env vars: HTTPS_PROXY, SSL_CERT_FILE, NODE_EXTRA_CA_CERTS
 #   9. Adds ~/.kiro-proxy to user PATH
@@ -34,8 +34,12 @@ $GITHUB_RAW     = 'https://raw.githubusercontent.com/DrewGitsIt/headroom-kiro-pr
 # Source files to download from GitHub
 $SOURCE_FILES = @(
     'src/connect_proxy.py',
+    'src/proxy.py',
+    'src/interceptor.py',
+    'src/stats.py',
+    'src/reporter.py',
     'src/handler.py',
-    'src/generate_certs.py'
+    'src/applet.py'
 )
 
 # ---------------------------------------------------------------------------
@@ -209,11 +213,11 @@ if (Test-Path (Join-Path $VENV_DIR 'Scripts\python.exe')) {
 $venv_pip    = Join-Path $VENV_DIR 'Scripts\pip.exe'
 $venv_python = Join-Path $VENV_DIR 'Scripts\python.exe'
 
-Write-Host "  Installing headroom-ai, cryptography, certifi (may take 30-60s)..." -ForegroundColor DarkGray
+Write-Host "  Installing headroom-ai, cryptography, certifi, boto3 (may take 30-60s)..." -ForegroundColor DarkGray
 & $venv_pip install --quiet --upgrade pip 2>$null | Out-Null
-& $venv_pip install --quiet "headroom-ai>=0.31.0" "cryptography>=42.0.0" "certifi>=2024.1.1"
+& $venv_pip install --quiet "headroom-ai>=0.31.0" "cryptography>=42.0.0" "certifi>=2024.1.1" "boto3>=1.34.0"
 if ($LASTEXITCODE -ne 0) { Write-Fail "pip install failed. Check your internet connection." }
-Write-Ok "Installed headroom-ai, cryptography, certifi"
+Write-Ok "Installed headroom-ai, cryptography, certifi, boto3"
 
 # ---------------------------------------------------------------------------
 Write-Step 4 "Downloading proxy source from GitHub"
@@ -242,11 +246,86 @@ foreach ($script in $mgmt_scripts) {
 Write-Step 5 "Generating TLS certificates"
 # ---------------------------------------------------------------------------
 
-$cert_script = Join-Path $SRC_DIR 'generate_certs.py'
-& $venv_python $cert_script $PROXY_DIR
-if ($LASTEXITCODE -ne 0) { Write-Fail "Certificate generation failed. Check Python output above." }
+# Generate CA + host cert inline using the cryptography library (no external file needed).
+# This mirrors what install.sh does on macOS with openssl commands.
+$cert_gen_script = @"
+import sys
+from pathlib import Path
+from datetime import datetime, timedelta, timezone
+from cryptography import x509
+from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
-$ca_cert_path  = Join-Path $PROXY_DIR 'ca-cert.pem'
+proxy_dir = Path(sys.argv[1])
+proxy_dir.mkdir(parents=True, exist_ok=True)
+
+# --- CA cert (self-signed) ---
+ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'kiro-proxy CA')])
+now = datetime.now(timezone.utc)
+ca_cert = (
+    x509.CertificateBuilder()
+    .subject_name(ca_name)
+    .issuer_name(ca_name)
+    .public_key(ca_key.public_key())
+    .serial_number(x509.random_serial_number())
+    .not_valid_before(now)
+    .not_valid_after(now + timedelta(days=3650))
+    .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+    .add_extension(x509.KeyUsage(
+        digital_signature=False, content_commitment=False, key_encipherment=False,
+        data_encipherment=False, key_agreement=False, key_cert_sign=True,
+        crl_sign=True, encipher_only=False, decipher_only=False
+    ), critical=True)
+    .sign(ca_key, hashes.SHA256())
+)
+
+# --- Host cert (signed by CA) ---
+host_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+host_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'runtime.us-east-1.kiro.dev')])
+host_cert = (
+    x509.CertificateBuilder()
+    .subject_name(host_name)
+    .issuer_name(ca_name)
+    .public_key(host_key.public_key())
+    .serial_number(x509.random_serial_number())
+    .not_valid_before(now)
+    .not_valid_after(now + timedelta(days=825))
+    .add_extension(x509.SubjectAlternativeName([
+        x509.DNSName('runtime.us-east-1.kiro.dev'),
+        x509.DNSName('*.kiro.dev'),
+    ]), critical=False)
+    .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+    .sign(ca_key, hashes.SHA256())
+)
+
+# --- Write files ---
+(proxy_dir / 'ca-key.pem').write_bytes(
+    ca_key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
+)
+(proxy_dir / 'ca-cert.pem').write_bytes(ca_cert.public_bytes(serialization.Encoding.PEM))
+(proxy_dir / 'key.pem').write_bytes(
+    host_key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
+)
+(proxy_dir / 'cert.pem').write_bytes(host_cert.public_bytes(serialization.Encoding.PEM))
+
+# --- CA bundle: system roots + our CA ---
+import certifi
+system_roots = Path(certifi.where()).read_bytes()
+(proxy_dir / 'ca-bundle.pem').write_bytes(system_roots + b'\n' + ca_cert.public_bytes(serialization.Encoding.PEM))
+
+print('Certificates generated successfully.')
+"@
+
+$cert_gen_tmp = Join-Path $PROXY_DIR '_cert_gen.py'
+Set-Content -Path $cert_gen_tmp -Value $cert_gen_script -Encoding UTF8
+
+& $venv_python $cert_gen_tmp $PROXY_DIR
+if ($LASTEXITCODE -ne 0) { Write-Fail "Certificate generation failed. Check Python output above." }
+Remove-Item -Path $cert_gen_tmp -Force -ErrorAction SilentlyContinue
+
+$ca_cert_path   = Join-Path $PROXY_DIR 'ca-cert.pem'
 $ca_bundle_path = Join-Path $PROXY_DIR 'ca-bundle.pem'
 
 if (-not (Test-Path $ca_cert_path)) {

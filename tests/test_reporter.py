@@ -49,19 +49,24 @@ class TestBuildPayload:
             "est_tokens_saved", "est_cost_saved_usd", "avg_savings_pct",
             "images_stripped", "tool_results_compressed",
             "assistant_responses_truncated", "errors_fallen_through",
-            "session_uptime_hours",
         }
         assert set(payload.keys()) == expected_keys
 
     def test_token_estimation(self, tmp_config_dir):
-        """Tokens estimated at ~4 chars per token."""
+        """Tokens estimated at ~4 chars per token from bytes_saved."""
+        stats = {"bytes_saved": 4000, "est_tokens_saved": 1000}
+        payload = reporter.build_payload(stats)
+        assert payload["est_tokens_saved"] == 1000  # reads from stats directly
+
+    def test_token_estimation_fallback(self, tmp_config_dir):
+        """If est_tokens_saved not in stats, falls back to bytes_saved / 4."""
         stats = {"bytes_saved": 4000}
         payload = reporter.build_payload(stats)
         assert payload["est_tokens_saved"] == 1000  # 4000 / 4
 
     def test_cost_estimation(self, tmp_config_dir):
-        """Cost estimated at Sonnet input pricing ($3/MTok)."""
-        stats = {"bytes_saved": 4_000_000}  # 1M tokens
+        """Cost passed through from stats when available."""
+        stats = {"bytes_saved": 4_000_000, "est_cost_saved_usd": 3.0}
         payload = reporter.build_payload(stats)
         assert payload["est_cost_saved_usd"] == pytest.approx(3.0, abs=0.01)
 

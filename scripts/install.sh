@@ -15,6 +15,14 @@
 
 set -euo pipefail
 
+# --- OS check ---
+if [[ "$(uname -s)" != "Darwin" ]]; then
+    echo "Error: kiro-proxy install.sh is macOS only."
+    echo "For Windows, use install.ps1 instead."
+    echo "Linux is not currently supported."
+    exit 1
+fi
+
 # --- Config ---
 PROXY_DIR="${HOME}/.kiro-proxy"
 PROXY_PORT=9090
@@ -25,7 +33,7 @@ PLIST_DEST="${HOME}/Library/LaunchAgents/${PLIST_LABEL}.plist"
 APPLET_PLIST_LABEL="com.kiro-proxy.applet"
 APPLET_PLIST_DEST="${HOME}/Library/LaunchAgents/${APPLET_PLIST_LABEL}.plist"
 SHELL_RC="${HOME}/.zshrc"
-[[ "${SHELL}" == *bash* ]] && SHELL_RC="${HOME}/.bashrc"
+[[ "${SHELL:-}" == *bash* ]] && SHELL_RC="${HOME}/.bashrc"
 HEALTH_URL="http://127.0.0.1:${PROXY_PORT}/health"
 
 # --- Colors ---
@@ -109,8 +117,10 @@ fi
 
 echo -e "${DIM}  Installing headroom-ai and rumps (this may take 30-60s)...${NC}"
 "${VENV_DIR}/bin/pip" install --quiet --upgrade pip 2>/dev/null
-"${VENV_DIR}/bin/pip" install --quiet "headroom-ai>=0.31.0" "rumps>=0.4.0" 2>&1 | grep -v "already satisfied" || true
-info "Installed headroom-ai + rumps"
+if ! "${VENV_DIR}/bin/pip" install --quiet "headroom-ai>=0.31.0" "rumps>=0.4.0" "boto3>=1.34.0" 2>&1; then
+    fail "pip install failed. Check your internet connection and try again."
+fi
+info "Installed headroom-ai, rumps, boto3"
 
 # --- Step 3: Download proxy source ---
 step 3 "Downloading proxy source"
@@ -339,7 +349,7 @@ echo "      Non-kiro traffic passes through unchanged. Simplest setup."
 echo "  [2] Wrapper — only kiro-cli uses the proxy. Other tools unaffected."
 echo "      Requires a shell alias for kiro-cli."
 echo ""
-read -r -p "Choose [1/2] (default: 1): " MODE_CHOICE
+read -r -p "Choose [1/2] (default: 1): " MODE_CHOICE </dev/tty || MODE_CHOICE=""
 
 PROXY_MODE="global"
 if [[ "${MODE_CHOICE}" == "2" ]]; then
@@ -455,7 +465,7 @@ if [[ ! -f "${PROXY_DIR}/aws_credentials" ]]; then
         echo ""
         info "AWS SSO session needed to enable team metrics (one-time setup)"
         echo -n "  Log in now? [Y/n] "
-        read -r TELEMETRY_CHOICE
+        read -r TELEMETRY_CHOICE </dev/tty || TELEMETRY_CHOICE=""
         if [[ "${TELEMETRY_CHOICE}" =~ ^[Nn] ]]; then
             info "Telemetry skipped. Enable anytime: aws sso login --profile ${METRICS_AWS_PROFILE} && kiro-proxy update"
         else

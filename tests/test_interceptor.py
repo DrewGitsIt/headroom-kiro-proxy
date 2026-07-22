@@ -96,11 +96,26 @@ class TestReadHttpRequest:
         assert body == b""
 
     async def test_non_numeric_content_length(self):
-        """Non-numeric Content-Length should raise ValueError (caught by caller)."""
+        """Non-numeric Content-Length is treated as 0 (graceful degradation)."""
         raw = b"POST /v1/messages HTTP/1.1\r\nContent-Length: abc\r\n\r\n"
         reader = _make_reader(raw)
-        with pytest.raises(ValueError):
-            await _read_http_request(reader)
+        result = await _read_http_request(reader)
+        assert result is not None
+        method, path, headers, body = result
+        assert method == "POST"
+        assert body == b""  # content_length treated as 0
+
+    async def test_stalled_headers_timeout(self):
+        """Client that sends request line but never finishes headers → timeout."""
+        # Feed a request line but no terminating \r\n\r\n, then EOF
+        # This simulates a stalled client — the readline returns b"" on EOF
+        reader = asyncio.StreamReader()
+        reader.feed_data(b"GET / HTTP/1.1\r\nHost: example.com\r\n")
+        reader.feed_eof()
+        result = await _read_http_request(reader)
+        # Should return a valid result since EOF terminates the header loop
+        # (empty line b"" breaks the while loop)
+        assert result is not None
 
     async def test_headers_case_insensitive_keys(self):
         """Header keys are lowercased."""

@@ -83,18 +83,18 @@ def build_payload(stats: dict[str, Any], proxy_version: str = "0.4.0") -> dict[s
         requests_compressed, bytes_saved, est_tokens_saved,
         est_cost_saved_usd, avg_savings_pct, images_stripped,
         tool_results_compressed, assistant_responses_truncated,
-        errors_fallen_through, session_uptime_hours
+        errors_fallen_through
     """
     now = datetime.now(timezone.utc)
     install_id = get_install_id()
 
-    requests_total = stats.get("requests_intercepted", 0)
+    # Read directly from get_stats() output keys
+    requests_total = stats.get("requests_total", 0)
     requests_compressed = stats.get("requests_compressed", 0)
     bytes_saved = stats.get("bytes_saved", 0)
-    est_tokens_saved = bytes_saved // 4  # ~4 chars per token
-    # Approximate cost: Sonnet input pricing ($3/MTok)
-    est_cost_saved_usd = est_tokens_saved * (3.0 / 1_000_000)
-    avg_savings_pct = stats.get("avg_compression_pct", 0.0)
+    est_tokens_saved = stats.get("est_tokens_saved", bytes_saved // 4)
+    est_cost_saved_usd = stats.get("est_cost_saved_usd", 0.0)
+    avg_savings_pct = stats.get("avg_savings_pct", 0.0)
 
     return {
         "install_id": install_id,
@@ -110,7 +110,6 @@ def build_payload(stats: dict[str, Any], proxy_version: str = "0.4.0") -> dict[s
         "tool_results_compressed": stats.get("tool_results_compressed", 0),
         "assistant_responses_truncated": stats.get("assistant_responses_truncated", 0),
         "errors_fallen_through": stats.get("errors_fallen_through", 0),
-        "session_uptime_hours": round(stats.get("uptime_hours", 0.0), 2),
     }
 
 

@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from interceptor import intercept_kiro, is_compression_available, get_import_error, make_server_ssl_context
-from stats import _stats, get_stats
+from stats import _stats, get_stats, load_daily_totals, flush_daily_totals
 
 logger = logging.getLogger("kiro_proxy.proxy")
 
@@ -199,6 +199,16 @@ async def _daily_reporter() -> None:
         logger.debug("reporter: unexpected error: %s", exc)
 
 
+async def _periodic_flush() -> None:
+    """Background task: flush stats to disk every 10 minutes.
+
+    Ensures daily totals survive proxy restarts. Runs until cancelled.
+    """
+    while True:
+        await asyncio.sleep(600)  # 10 minutes
+        flush_daily_totals()
+
+
 async def start_connect_proxy(port: int = 9090) -> asyncio.Server:
     """Start the CONNECT proxy server and log startup status."""
     server = await asyncio.start_server(
@@ -224,6 +234,7 @@ async def start_connect_proxy(port: int = 9090) -> asyncio.Server:
 
 def main() -> None:
     import argparse
+    import signal
 
     parser = argparse.ArgumentParser(description="Kiro compression proxy")
     parser.add_argument("--port", type=int, default=9090)
@@ -236,18 +247,41 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
+    # Load prior daily totals (survives restarts within the same day)
+    load_daily_totals()
+
     async def run() -> None:
+        # Flush stats on SIGTERM (launchd stop, kiro-proxy restart)
+        loop = asyncio.get_event_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, lambda: _shutdown(loop))
+
         server = await start_connect_proxy(port=args.port)
         reporter_task = asyncio.create_task(_daily_reporter(), name="periodic_reporter")
+        flush_task = asyncio.create_task(_periodic_flush(), name="periodic_flush")
         try:
             async with server:
                 await server.serve_forever()
         finally:
             reporter_task.cancel()
+            flush_task.cancel()
             try:
                 await reporter_task
             except asyncio.CancelledError:
                 pass
+            try:
+                await flush_task
+            except asyncio.CancelledError:
+                pass
+            # Final flush on shutdown
+            flush_daily_totals()
+            logger.info("Shutdown complete, daily totals flushed")
+
+    def _shutdown(loop: asyncio.AbstractEventLoop) -> None:
+        """Signal handler: stop the event loop gracefully."""
+        logger.info("Received shutdown signal, flushing stats...")
+        for task in asyncio.all_tasks(loop):
+            task.cancel()
 
     asyncio.run(run())
 

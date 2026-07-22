@@ -200,8 +200,19 @@ async def _read_http_request(
     headers: dict[str, str] = {}
     content_length = 0
     is_chunked = False
+    # Total timeout for header block: a well-behaved client sends all headers
+    # within a few seconds. 30s covers slow connections without pinning forever.
+    header_deadline = asyncio.get_event_loop().time() + 30.0
     while True:
-        line = await reader.readline()
+        remaining = header_deadline - asyncio.get_event_loop().time()
+        if remaining <= 0:
+            logger.warning("Header read timed out (30s deadline)")
+            return None
+        try:
+            line = await asyncio.wait_for(reader.readline(), timeout=remaining)
+        except asyncio.TimeoutError:
+            logger.warning("Header read timed out waiting for next line")
+            return None
         if line in (b"\r\n", b"\n", b""):
             break
         decoded = line.decode("latin-1").strip()
@@ -209,7 +220,11 @@ async def _read_http_request(
             key, _, value = decoded.partition(":")
             headers[key.strip().lower()] = value.strip()
             if key.strip().lower() == "content-length":
-                content_length = int(value.strip())
+                try:
+                    content_length = int(value.strip())
+                except ValueError:
+                    logger.warning("Non-numeric Content-Length: %r, treating as 0", value.strip())
+                    content_length = 0
             elif key.strip().lower() == "transfer-encoding":
                 is_chunked = "chunked" in value.strip().lower()
 

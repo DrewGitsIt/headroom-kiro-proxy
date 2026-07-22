@@ -3,12 +3,23 @@
 Maintains rolling counters, timing histograms, and cost estimates.
 Thread-safe access isn't needed because the proxy is single-threaded
 (asyncio event loop).
+
+Persistence (Option C): Reportable counters are flushed to a local JSON
+file every ~10 minutes and on SIGTERM. On startup, prior values are loaded
+so the daily total survives proxy restarts. The file is reset at midnight
+(when the date changes).
 """
 
 from __future__ import annotations
 
+import json
+import logging
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger("kiro_proxy.stats")
 
 _MAX_HISTORY = 50
 
@@ -17,6 +28,23 @@ _MAX_HISTORY = 50
 # which model kiro-cli is using (Opus, Sonnet, Haiku, etc.).
 _COST_PER_INPUT_TOKEN = 3.0 / 1_000_000
 _CHARS_PER_TOKEN = 4
+
+# Path to the daily totals persistence file
+_DAILY_TOTALS_FILE = Path.home() / ".kiro-proxy" / "daily_totals.json"
+
+# Keys that are cumulative counters (reportable, survive restarts)
+_REPORTABLE_KEYS = (
+    "requests_total",
+    "requests_compressed",
+    "tunnels_passthrough",
+    "bytes_request_original",
+    "bytes_request_sent",
+    "bytes_response_total",
+    "images_stripped",
+    "tool_results_compressed",
+    "assistant_responses_truncated",
+    "errors_fallen_through",
+)
 
 # Global stats dict — mutated by the proxy and read by /stats endpoint
 _stats: dict[str, Any] = {
@@ -142,3 +170,48 @@ def get_stats() -> dict[str, Any]:
         "est_cost_saved_usd": cost_saved_estimate,
         "started_at": _started_at,
     }
+
+
+# --- Daily totals persistence ---
+
+
+def load_daily_totals() -> None:
+    """Load prior daily totals from disk into _stats on startup.
+
+    If the file's date matches today, add its counters to the in-memory
+    stats (accumulate across restarts). If the date is stale (yesterday
+    or older), ignore it — the new day starts fresh.
+    """
+    try:
+        if not _DAILY_TOTALS_FILE.exists():
+            return
+        data = json.loads(_DAILY_TOTALS_FILE.read_text())
+        file_date = data.get("date", "")
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if file_date != today:
+            logger.debug("Daily totals file is from %s (today is %s), ignoring", file_date, today)
+            return
+        for key in _REPORTABLE_KEYS:
+            if key in data:
+                _stats[key] += data[key]
+        logger.info("Loaded daily totals from prior session (%d requests so far today)", _stats["requests_total"])
+    except Exception as exc:
+        logger.debug("Could not load daily totals: %s", exc)
+
+
+def flush_daily_totals() -> None:
+    """Write current reportable counters to disk.
+
+    Called periodically (~10 min) and on SIGTERM. The file is a single
+    JSON object — overwritten in place, not appended.
+    """
+    try:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        data: dict[str, Any] = {"date": today}
+        for key in _REPORTABLE_KEYS:
+            data[key] = _stats[key]
+        _DAILY_TOTALS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _DAILY_TOTALS_FILE.write_text(json.dumps(data))
+        logger.debug("Flushed daily totals to %s", _DAILY_TOTALS_FILE)
+    except Exception as exc:
+        logger.debug("Could not flush daily totals: %s", exc)

@@ -105,37 +105,30 @@ function Invoke-Status {
         Write-Host ""
         Write-Host "  Compression stats:" -ForegroundColor Cyan
 
-        $req_total   = if ($null -ne $stats.requests_total)  { $stats.requests_total  } `
-                       elseif ($null -ne $stats.requests)    { $stats.requests         } `
-                       else { 'n/a' }
-        $bytes_in    = if ($null -ne $stats.bytes_in)        { $stats.bytes_in         } `
-                       elseif ($null -ne $stats.bytes_received) { $stats.bytes_received } `
-                       else { 0 }
-        $bytes_out   = if ($null -ne $stats.bytes_out)       { $stats.bytes_out        } `
-                       elseif ($null -ne $stats.bytes_sent)  { $stats.bytes_sent       } `
-                       else { 0 }
-        $uptime_s    = if ($null -ne $stats.uptime_seconds)  { $stats.uptime_seconds   } else { 0 }
+        $req_total   = if ($null -ne $stats.requests_total)           { $stats.requests_total           } else { 'n/a' }
+        $req_comp    = if ($null -ne $stats.requests_compressed)      { $stats.requests_compressed      } else { 0 }
+        $bytes_saved = if ($null -ne $stats.bytes_saved)              { $stats.bytes_saved              } else { 0 }
+        $savings_pct = if ($null -ne $stats.cumulative_savings_pct)   { $stats.cumulative_savings_pct   } else { 0.0 }
+        $avg_savings = if ($null -ne $stats.avg_savings_pct)          { $stats.avg_savings_pct          } else { 0.0 }
+        $avg_ttfb    = if ($null -ne $stats.avg_ttfb_ms)             { $stats.avg_ttfb_ms              } else { 0 }
+        $tokens_est  = if ($null -ne $stats.est_tokens_saved)        { $stats.est_tokens_saved         } else { 0 }
+        $cost_est    = if ($null -ne $stats.est_cost_saved_usd)      { $stats.est_cost_saved_usd       } else { 0.0 }
+        $tunnels     = if ($null -ne $stats.tunnels_passthrough)     { $stats.tunnels_passthrough      } else { 0 }
+        $started_at  = if ($null -ne $stats.started_at)              { $stats.started_at               } else { 'unknown' }
 
-        Write-Item "  Requests proxied:" $req_total
-
-        if ($bytes_in -gt 0 -and $bytes_out -gt 0) {
-            $saved_pct = [math]::Round((1 - $bytes_out / $bytes_in) * 100, 1)
-            $saved_kb  = [math]::Round(($bytes_in - $bytes_out) / 1024, 1)
-            Write-Item "  Bytes in:"   "$([math]::Round($bytes_in / 1024, 1)) KB"
-            Write-Item "  Bytes out:"  "$([math]::Round($bytes_out / 1024, 1)) KB"
-            Write-Item "  Saved:"      "$saved_kb KB ($saved_pct%)"
+        Write-Item "  Requests compressed:" "$req_comp / $req_total"
+        Write-Item "  Tunnels (passthrough):" $tunnels
+        if ($bytes_saved -gt 0) {
+            $saved_kb = [math]::Round($bytes_saved / 1024, 1)
+            Write-Item "  Bytes saved:" "$saved_kb KB ($savings_pct%)"
+            Write-Item "  Avg savings:" "$avg_savings%"
+            Write-Item "  Est tokens saved:" $tokens_est
+            Write-Item "  Est cost saved:" "`$$cost_est"
         }
-
-        if ($uptime_s -gt 0) {
-            $uptime_fmt = if ($uptime_s -ge 3600) {
-                "{0}h {1}m" -f [math]::Floor($uptime_s / 3600), [math]::Floor(($uptime_s % 3600) / 60)
-            } elseif ($uptime_s -ge 60) {
-                "{0}m {1}s" -f [math]::Floor($uptime_s / 60), ($uptime_s % 60)
-            } else {
-                "${uptime_s}s"
-            }
-            Write-Item "  Uptime:" $uptime_fmt
+        if ($avg_ttfb -gt 0) {
+            Write-Item "  Avg TTFB:" "${avg_ttfb}ms"
         }
+        Write-Item "  Started:" $started_at
 
     } catch {
         Write-Warn "Could not parse /stats: $_"

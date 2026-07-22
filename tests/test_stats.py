@@ -151,3 +151,69 @@ class TestResetStats:
         assert _stats["bytes_request_original"] == 0
         assert _stats["ttfb_ms_history"] == []
         assert _stats["savings_pct_history"] == []
+
+
+class TestDailyTotalsPersistence:
+    """Tests for flush_daily_totals() and load_daily_totals()."""
+
+    @pytest.fixture(autouse=True)
+    def _use_tmp_file(self, tmp_path, monkeypatch):
+        """Point the daily totals file to a temp location."""
+        import stats as stats_module
+        self.totals_file = tmp_path / "daily_totals.json"
+        monkeypatch.setattr(stats_module, "_DAILY_TOTALS_FILE", self.totals_file)
+
+    def test_flush_creates_file(self):
+        """flush_daily_totals writes the file with today's date."""
+        from stats import flush_daily_totals
+        from datetime import datetime, timezone
+        _stats["requests_total"] = 42
+        _stats["bytes_request_original"] = 10000
+        _stats["bytes_request_sent"] = 6000
+        flush_daily_totals()
+        assert self.totals_file.exists()
+        import json
+        data = json.loads(self.totals_file.read_text())
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        assert data["date"] == today
+        assert data["requests_total"] == 42
+        assert data["bytes_request_original"] == 10000
+
+    def test_load_adds_to_stats(self):
+        """load_daily_totals adds file values to current stats."""
+        from stats import flush_daily_totals, load_daily_totals
+        _stats["requests_total"] = 50
+        _stats["bytes_request_original"] = 5000
+        flush_daily_totals()
+        # Simulate restart: reset stats, then load
+        reset_stats()
+        assert _stats["requests_total"] == 0
+        load_daily_totals()
+        assert _stats["requests_total"] == 50
+        assert _stats["bytes_request_original"] == 5000
+
+    def test_load_ignores_stale_date(self):
+        """File from yesterday is ignored."""
+        import json
+        data = {"date": "2020-01-01", "requests_total": 999}
+        self.totals_file.write_text(json.dumps(data))
+        from stats import load_daily_totals
+        _stats["requests_total"] = 0
+        load_daily_totals()
+        assert _stats["requests_total"] == 0  # Not loaded
+
+    def test_load_missing_file_no_crash(self):
+        """Missing file doesn't crash."""
+        from stats import load_daily_totals
+        load_daily_totals()  # Should not raise
+
+    def test_flush_then_load_accumulates(self):
+        """Flush with 10, restart with 5 in memory, load → 15."""
+        from stats import flush_daily_totals, load_daily_totals
+        _stats["requests_total"] = 10
+        flush_daily_totals()
+        # Simulate restart: new session has 5 requests already
+        reset_stats()
+        _stats["requests_total"] = 5
+        load_daily_totals()
+        assert _stats["requests_total"] == 15
