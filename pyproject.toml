@@ -5,7 +5,7 @@ description = "Local compression proxy for kiro-cli — cuts token costs ~50%"
 requires-python = ">=3.10"
 dependencies = [
     "headroom-ai>=0.31.0",
-    "rumps>=0.4.0",
+    "rumps>=0.4.0; sys_platform == 'darwin'",
     "boto3>=1.34.0",
 ]
 
