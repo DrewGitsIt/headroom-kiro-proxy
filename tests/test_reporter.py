@@ -22,6 +22,7 @@ def tmp_config_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(reporter, "_CONFIG_FILE", tmp_path / "config")
     monkeypatch.setattr(reporter, "_LAST_REPORT_FILE", tmp_path / "last_reported_date")
     monkeypatch.setattr(reporter, "_LAST_ERROR_FILE", tmp_path / "last_report_error")
+    monkeypatch.setattr(reporter, "_QUEUE_DIR", tmp_path / "report_queue")
     return tmp_path
 
 
@@ -222,15 +223,41 @@ class TestReportNow:
         assert error_file.exists()
         assert "boto3" in error_file.read_text()
 
-    def test_upload_error_recorded(self, tmp_config_dir):
-        """S3 error → returns False, error written to last_report_error."""
+    def test_upload_error_queues_payload(self, tmp_config_dir):
+        """S3 error → returns False, payload queued for retry."""
         with patch("reporter._upload_to_s3", side_effect=Exception("AccessDenied")):
             result = reporter.report_now({"bytes_saved": 100})
 
         assert result is False
-        error_file = tmp_config_dir / "last_report_error"
-        assert error_file.exists()
-        assert "AccessDenied" in error_file.read_text()
+        queue_dir = tmp_config_dir / "report_queue"
+        assert queue_dir.exists()
+        queued_files = list(queue_dir.glob("*.json"))
+        assert len(queued_files) == 1
+        # Queued file contains valid payload
+        payload = json.loads(queued_files[0].read_text())
+        assert "install_id" in payload
+
+    def test_success_drains_queue(self, tmp_config_dir):
+        """Successful report drains previously queued reports."""
+        # Set up a queued report from yesterday
+        queue_dir = tmp_config_dir / "report_queue"
+        queue_dir.mkdir()
+        old_payload = {"install_id": "test", "report_date": "2026-07-20", "requests_total": 50}
+        (queue_dir / "2026-07-20.json").write_text(json.dumps(old_payload))
+
+        upload_calls = []
+
+        def mock_upload(payload):
+            upload_calls.append(payload)
+
+        with patch("reporter._upload_to_s3", mock_upload):
+            result = reporter.report_now({"bytes_saved": 100})
+
+        assert result is True
+        # Today's report + drained yesterday's report
+        assert len(upload_calls) == 2
+        # Queue is now empty
+        assert list(queue_dir.glob("*.json")) == []
 
     def test_success_clears_previous_error(self, tmp_config_dir):
         """Successful report deletes the last_report_error file."""
@@ -242,6 +269,23 @@ class TestReportNow:
 
         assert result is True
         assert not (tmp_config_dir / "last_report_error").exists()
+
+    def test_queue_capped_at_max_days(self, tmp_config_dir):
+        """Queue doesn't grow beyond _MAX_QUEUED_DAYS."""
+        queue_dir = tmp_config_dir / "report_queue"
+        queue_dir.mkdir()
+        # Fill queue with 35 files (over the 30 cap)
+        for i in range(35):
+            date = f"2026-06-{i+1:02d}"
+            (queue_dir / f"{date}.json").write_text(json.dumps({"report_date": date}))
+
+        # Trigger enqueue which prunes
+        with patch("reporter._upload_to_s3", side_effect=Exception("fail")):
+            reporter.report_now({"bytes_saved": 100})
+
+        # Should be capped at 30
+        queued = list(queue_dir.glob("*.json"))
+        assert len(queued) <= reporter._MAX_QUEUED_DAYS
 
 
 class TestGetTelemetryStatus:

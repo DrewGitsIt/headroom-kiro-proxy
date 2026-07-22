@@ -145,8 +145,8 @@ def _upload_to_s3(payload: dict[str, Any]) -> None:
 def report_now(stats: dict[str, Any]) -> bool:
     """Attempt a single metrics report. Returns True on success.
 
-    This is the synchronous entry point — call from an asyncio task via
-    run_in_executor or from the periodic reporter loop.
+    On success, also drains any queued unreported days.
+    On failure, queues today's payload for retry next time.
     """
     if not is_telemetry_enabled():
         return False
@@ -159,6 +159,13 @@ def report_now(stats: dict[str, Any]) -> bool:
         _LAST_REPORT_FILE.write_text(payload["report_date"])
         if _LAST_ERROR_FILE.exists():
             _LAST_ERROR_FILE.unlink()
+
+        # Drain queued reports from prior failed days
+        _drain_queue()
+
+        # Remove today from queue (if it was queued from an earlier failed attempt)
+        _dequeue(payload["report_date"])
+
         return True
 
     except ImportError:
@@ -169,7 +176,59 @@ def report_now(stats: dict[str, Any]) -> bool:
         error_msg = f"{type(exc).__name__}: {exc}"
         _record_error(error_msg)
         logger.debug("Metrics report failed: %s", error_msg)
+        # Queue today's payload for retry
+        try:
+            payload = build_payload(stats)
+            _enqueue(payload)
+        except Exception:
+            pass
         return False
+
+
+# --- Report queue (unreported days) ---
+
+_QUEUE_DIR = _CONFIG_DIR / "report_queue"
+_MAX_QUEUED_DAYS = 30  # Drop data older than 30 days
+
+
+def _enqueue(payload: dict[str, Any]) -> None:
+    """Save a failed report to the queue for later retry."""
+    try:
+        _QUEUE_DIR.mkdir(parents=True, exist_ok=True)
+        queue_file = _QUEUE_DIR / f"{payload['report_date']}.json"
+        queue_file.write_text(json.dumps(payload))
+        # Prune queue if over cap
+        files = sorted(_QUEUE_DIR.glob("*.json"))
+        while len(files) > _MAX_QUEUED_DAYS:
+            files[0].unlink()
+            files = files[1:]
+    except Exception:
+        pass
+
+
+def _dequeue(report_date: str) -> None:
+    """Remove a date from the queue (successfully reported)."""
+    try:
+        queue_file = _QUEUE_DIR / f"{report_date}.json"
+        if queue_file.exists():
+            queue_file.unlink()
+    except Exception:
+        pass
+
+
+def _drain_queue() -> None:
+    """Upload all queued reports. Best-effort — failures stay queued."""
+    if not _QUEUE_DIR.exists():
+        return
+    for queue_file in sorted(_QUEUE_DIR.glob("*.json")):
+        try:
+            payload = json.loads(queue_file.read_text())
+            _upload_to_s3(payload)
+            queue_file.unlink()
+            logger.debug("Drained queued report for %s", payload.get("report_date", "?"))
+        except Exception as exc:
+            logger.debug("Queue drain failed for %s: %s", queue_file.name, exc)
+            break  # Stop on first failure (credentials still bad)
 
 
 def _record_error(msg: str) -> None:
