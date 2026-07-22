@@ -268,6 +268,7 @@ function Show-Usage {
     Write-Host "  restart     Restart the proxy"
     Write-Host "  update      Update to latest version"
     Write-Host "  uninstall   Remove kiro-proxy completely"
+    Write-Host "  birdseye    Fleet-wide metrics (all users, this month)"
     Write-Host ""
 }
 
@@ -284,5 +285,6 @@ switch ($subcommand) {
     'restart'   { Invoke-Restart   }
     'update'    { Invoke-Update    }
     'uninstall' { Invoke-Uninstall }
+    'birdseye'  { & (Join-Path $PROXY_DIR '.venv\Scripts\python.exe') (Join-Path $PROXY_DIR 'src\birdseye.py') }
     default     { Show-Usage       }
 }

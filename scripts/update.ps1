@@ -20,6 +20,7 @@ $SOURCE_FILES = @(
     'src/interceptor.py',
     'src/stats.py',
     'src/reporter.py',
+    'src/birdseye.py',
     'src/handler.py',
     'src/applet.py'
 )

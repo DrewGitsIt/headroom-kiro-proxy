@@ -35,6 +35,7 @@ usage() {
     echo "  telemetry on     Enable daily usage metrics upload"
     echo "  telemetry off    Disable daily usage metrics upload"
     echo "  telemetry status Show telemetry state, install ID, last report date"
+    echo "  birdseye         Fleet-wide metrics (all users, this month)"
     echo ""
     echo "Config:  ${PROXY_DIR}/"
     echo "Logs:    ${PROXY_DIR}/logs/"
@@ -171,6 +172,7 @@ cmd_disable() {
 
 cmd_restart() {
     local plist="${HOME}/Library/LaunchAgents/com.kiro-proxy.compression.plist"
+    local applet_plist="${HOME}/Library/LaunchAgents/com.kiro-proxy.applet.plist"
     launchctl unload "${plist}" 2>/dev/null
     sleep 1
     launchctl load "${plist}" 2>/dev/null
@@ -180,6 +182,13 @@ cmd_restart() {
     else
         echo -e "${RED}●${NC} Proxy failed to restart. Check: kiro-proxy logs"
         return 1
+    fi
+
+    # Ensure the menu bar applet is running
+    if ! pgrep -f "applet.py" > /dev/null 2>&1; then
+        launchctl unload "${applet_plist}" 2>/dev/null
+        launchctl load "${applet_plist}" 2>/dev/null
+        echo -e "${GREEN}●${NC} Applet restarted"
     fi
 }
 
@@ -396,6 +405,7 @@ case "${1:-}" in
     restart)   cmd_restart ;;
     config)    cmd_config "${2:-}" "${3:-}" ;;
     telemetry) cmd_telemetry "${2:-status}" ;;
+    birdseye)  "${VENV_DIR}/bin/python" "${PROXY_DIR}/src/birdseye.py" ${2:+--month "$2"} ${3:+--year "$3"} ;;
     -h|--help|help|"")
         usage ;;
     *)

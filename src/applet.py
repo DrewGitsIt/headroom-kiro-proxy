@@ -48,6 +48,7 @@ class KiroProxyApp(rumps.App):
         self.errors_item = rumps.MenuItem("Errors: --", callback=self._noop)
         self.toggle_item = rumps.MenuItem("Disable Proxy", callback=self._toggle_proxy)
         self.logs_item = rumps.MenuItem("Open Log…", callback=self._open_logs)
+        self.birdseye_item = rumps.MenuItem("Fleet Metrics…", callback=self._show_birdseye)
 
         self.menu = [
             self.status_item,
@@ -62,6 +63,7 @@ class KiroProxyApp(rumps.App):
             None,
             self.toggle_item,
             self.logs_item,
+            self.birdseye_item,
         ]
 
     @staticmethod
@@ -180,6 +182,45 @@ class KiroProxyApp(rumps.App):
             subprocess.run(["open", "-a", "Console", str(LOG_PATH)])
         else:
             rumps.notification("Kiro Proxy", "No log file", f"Expected: {LOG_PATH}")
+
+    def _show_birdseye(self, _: rumps.MenuItem) -> None:
+        """Query fleet metrics and show in a dialog."""
+        import threading
+
+        def _query():
+            try:
+                import sys
+                sys.path.insert(0, str(PROXY_DIR / "src"))
+                from birdseye import query_fleet_metrics, format_metrics
+                metrics = query_fleet_metrics()
+                if metrics is None:
+                    self._show_dialog(
+                        "Fleet Metrics — Error",
+                        "Query failed.\n\nRun: aws sso login --profile ai-platform-dev"
+                    )
+                elif metrics.get("active_users", 0) == 0:
+                    self._show_dialog(
+                        "Fleet Metrics",
+                        f"No data for {metrics.get('period', 'this month')}.\n"
+                        "Metrics may not have reported yet."
+                    )
+                else:
+                    self._show_dialog("Fleet Metrics", format_metrics(metrics))
+            except Exception as exc:
+                self._show_dialog("Fleet Metrics — Error", str(exc)[:200])
+
+        # Run in background thread to avoid blocking the menu bar
+        threading.Thread(target=_query, daemon=True).start()
+
+    @staticmethod
+    def _show_dialog(title: str, message: str) -> None:
+        """Show a macOS dialog via osascript (works from any thread)."""
+        escaped_msg = message.replace('\\', '\\\\').replace('"', '\\"')
+        escaped_title = title.replace('\\', '\\\\').replace('"', '\\"')
+        subprocess.run([
+            "osascript", "-e",
+            f'display dialog "{escaped_msg}" with title "{escaped_title}" buttons {{"OK"}} default button "OK"'
+        ], capture_output=True)
 
 
 def _human_tokens(n: int) -> str:
