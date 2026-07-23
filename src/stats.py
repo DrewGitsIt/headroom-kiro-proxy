@@ -36,6 +36,7 @@ _DAILY_TOTALS_FILE = Path.home() / ".kiro-proxy" / "daily_totals.json"
 _REPORTABLE_KEYS = (
     "requests_total",
     "requests_compressed",
+    "requests_cache_bypass",
     "tunnels_passthrough",
     "bytes_request_original",
     "bytes_request_sent",
@@ -50,6 +51,7 @@ _REPORTABLE_KEYS = (
 _stats: dict[str, Any] = {
     "requests_total": 0,
     "requests_compressed": 0,
+    "requests_cache_bypass": 0,
     "tunnels_passthrough": 0,
     "bytes_request_original": 0,
     "bytes_request_sent": 0,
@@ -100,6 +102,7 @@ def reset_stats() -> None:
     _stats.update({
         "requests_total": 0,
         "requests_compressed": 0,
+        "requests_cache_bypass": 0,
         "tunnels_passthrough": 0,
         "bytes_request_original": 0,
         "bytes_request_sent": 0,
@@ -150,6 +153,7 @@ def get_stats() -> dict[str, Any]:
     return {
         "requests_total": _stats["requests_total"],
         "requests_compressed": _stats["requests_compressed"],
+        "requests_cache_bypass": _stats["requests_cache_bypass"],
         "tunnels_passthrough": _stats["tunnels_passthrough"],
         "bytes_saved": bytes_saved,
         "cumulative_savings_pct": cumulative_savings_pct,

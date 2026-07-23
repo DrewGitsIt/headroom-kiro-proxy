@@ -29,10 +29,19 @@ _COMPRESSION_AVAILABLE = False
 _import_err: Exception | None = None
 try:
     from handler import compress_kiro_request
+    from session_timer import SessionTimer
     _COMPRESSION_AVAILABLE = True
 except Exception as _exc:
     _import_err = _exc
     compress_kiro_request = None  # type: ignore[assignment]
+    SessionTimer = None  # type: ignore[assignment, misc]
+
+# Module-level session timer shared across all requests.
+# Tracks per-conversationId last-seen timestamps so we only compress
+# when the provider's prompt cache is cold.
+_session_timer: SessionTimer | None = None
+if _COMPRESSION_AVAILABLE and SessionTimer is not None:
+    _session_timer = SessionTimer()
 
 
 def is_compression_available() -> bool:
@@ -124,24 +133,32 @@ async def intercept_kiro(
     try:
         if not _COMPRESSION_AVAILABLE:
             raise RuntimeError("compression unavailable")
-        compressed_body, compression_stats = compress_kiro_request(body)
-        if len(compressed_body) < len(body):
-            _stats["requests_compressed"] += 1
-            _stats["images_stripped"] += compression_stats.get("images_stripped", 0)
-            _stats["tool_results_compressed"] += compression_stats.get("tool_results_compressed", 0)
-            _stats["assistant_responses_truncated"] += compression_stats.get("assistant_responses_truncated", 0)
-            savings_pct = (1 - len(compressed_body) / len(body)) * 100
-            logger.info(
-                "kiro: compressed %d → %d bytes (%.1f%% saved, "
-                "%d images, %d tool results, %d assistants truncated)",
-                len(body), len(compressed_body), savings_pct,
-                compression_stats.get("images_stripped", 0),
-                compression_stats.get("tool_results_compressed", 0),
-                compression_stats.get("assistant_responses_truncated", 0),
-            )
-            body = compressed_body
-        record_compression(original_size, len(body))
-        _stats["bytes_request_sent"] += len(body)
+        compressed_body, compression_stats = compress_kiro_request(
+            body, session_timer=_session_timer
+        )
+        if compression_stats.get("cache_bypass"):
+            # Cache is warm — body passed through unchanged.
+            _stats["requests_cache_bypass"] += 1
+            record_compression(original_size, original_size)
+            _stats["bytes_request_sent"] += len(body)
+        else:
+            if len(compressed_body) < len(body):
+                _stats["requests_compressed"] += 1
+                _stats["images_stripped"] += compression_stats.get("images_stripped", 0)
+                _stats["tool_results_compressed"] += compression_stats.get("tool_results_compressed", 0)
+                _stats["assistant_responses_truncated"] += compression_stats.get("assistant_responses_truncated", 0)
+                savings_pct = (1 - len(compressed_body) / len(body)) * 100
+                logger.info(
+                    "kiro: compressed %d → %d bytes (%.1f%% saved, "
+                    "%d images, %d tool results, %d assistants truncated)",
+                    len(body), len(compressed_body), savings_pct,
+                    compression_stats.get("images_stripped", 0),
+                    compression_stats.get("tool_results_compressed", 0),
+                    compression_stats.get("assistant_responses_truncated", 0),
+                )
+                body = compressed_body
+            record_compression(original_size, len(body))
+            _stats["bytes_request_sent"] += len(body)
     except Exception as exc:
         logger.warning("Compression failed, forwarding unchanged: %s", exc)
         _stats["errors_fallen_through"] += 1
