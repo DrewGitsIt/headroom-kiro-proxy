@@ -62,11 +62,11 @@ function Write-Fail  {
 # ---------------------------------------------------------------------------
 function Download-File {
     param([string]$Url, [string]$Dest)
-    try {
-        Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing -NoProxy
-    } catch {
-        Write-Fail "Failed to download: $Url`n  Error: $_"
-    }
+#    try {
+#        Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing -NoProxy
+#    } catch {
+#        Write-Fail "Failed to download: $Url`n  Error: $_"
+#    }
 }
 
 # ---------------------------------------------------------------------------
@@ -201,6 +201,8 @@ Write-Step 3 "Creating venv and installing Python dependencies"
 New-Item -ItemType Directory -Force -Path $PROXY_DIR | Out-Null
 New-Item -ItemType Directory -Force -Path $SRC_DIR   | Out-Null
 New-Item -ItemType Directory -Force -Path $LOGS_DIR  | Out-Null
+# Fix WIN encoding errors
+Set-UserEnv -Name "PYTHONUTF8" -Value "1"
 
 if (Test-Path (Join-Path $VENV_DIR 'Scripts\python.exe')) {
     Write-Ok "Existing venv found at $VENV_DIR, reusing"
@@ -358,6 +360,10 @@ if ($existing) {
 # shell redirection natively.
 $action_cmd  = $venv_python
 $action_args = "`"$proxy_script`" --port $PROXY_PORT >> `"$log_out`" 2>> `"$log_err`""
+
+Write-Ok $action_cmd
+Write-Ok $action_args
+Write-Ok $SRC_DIR
 
 # Wrap in cmd /c so redirection works
 $action = New-ScheduledTaskAction `

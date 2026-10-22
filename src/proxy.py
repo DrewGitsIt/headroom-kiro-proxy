@@ -16,15 +16,26 @@ import asyncio
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
-from interceptor import intercept_kiro, is_compression_available, get_import_error, make_server_ssl_context
+from interceptor import intercept_kiro, is_compression_available, get_import_error, is_tls_available
 from stats import _stats, get_stats, load_daily_totals, flush_daily_totals
 
 logger = logging.getLogger("kiro_proxy.proxy")
 
 KIRO_RUNTIME_HOST = "runtime.us-east-1.kiro.dev"
+
+# Overridable at startup via --kiro-host; _handle_connect reads this global
+# so no call-site plumbing is needed through the connection-handling path.
+_kiro_runtime_host = KIRO_RUNTIME_HOST
+
+
+def set_kiro_runtime_host(host: str) -> None:
+    """Override the hostname matched for TLS interception (--kiro-host)."""
+    global _kiro_runtime_host
+    _kiro_runtime_host = host.rstrip(".").lower()
 
 
 # --- Connection handling ---
@@ -78,7 +89,7 @@ async def _handle_connect(reader: asyncio.StreamReader, writer: asyncio.StreamWr
         if header_line in (b"\r\n", b"\n", b""):
             break
 
-    if host.rstrip(".").lower() == KIRO_RUNTIME_HOST:
+    if host.rstrip(".").lower() == _kiro_runtime_host:
         await intercept_kiro(reader, writer, target, _raw_tunnel)
     else:
         await _tunnel_passthrough(reader, writer, target)
@@ -216,16 +227,17 @@ async def start_connect_proxy(port: int = 9090) -> asyncio.Server:
     )
     addr = server.sockets[0].getsockname()
     logger.info("kiro-proxy listening on %s:%d (pid=%d)", addr[0], addr[1], os.getpid())
+    logger.info("Intercepting CONNECT traffic for host: %s", _kiro_runtime_host)
 
     if not is_compression_available():
         err = get_import_error()
         logger.warning("DEGRADED: compression unavailable (handler import failed: %s)", err)
         logger.warning("DEGRADED: proxy will pass traffic through without compression")
-    ssl_ctx = make_server_ssl_context()
-    if ssl_ctx is None:
+    ssl_available = is_tls_available()
+    if not ssl_available:
         logger.warning("DEGRADED: TLS interception unavailable — all traffic will tunnel raw")
     else:
-        logger.info("TLS interception ready (cert loaded)")
+        logger.info("TLS interception ready (CA loaded, leaf certs signed per host)")
     if is_compression_available():
         logger.info("Compression engine ready")
 
@@ -239,7 +251,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Kiro compression proxy")
     parser.add_argument("--port", type=int, default=9090)
     parser.add_argument("--debug", action="store_true")
+    parser.add_argument(
+        "--kiro-host",
+        default=KIRO_RUNTIME_HOST,
+        help="Hostname to intercept for TLS/compression (default: %(default)s)",
+    )
     args = parser.parse_args()
+
+    set_kiro_runtime_host(args.kiro_host)
 
     level = logging.DEBUG if args.debug else logging.INFO
     logging.basicConfig(
@@ -253,8 +272,13 @@ def main() -> None:
     async def run() -> None:
         # Flush stats on SIGTERM (launchd stop, kiro-proxy restart)
         loop = asyncio.get_event_loop()
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            loop.add_signal_handler(sig, lambda: _shutdown(loop))
+        if sys.platform != "win32":
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                loop.add_signal_handler(sig, lambda: _shutdown(loop))
+        else:
+            # Windows event loops don't support add_signal_handler.
+            # SIGINT still raises KeyboardInterrupt, which asyncio.run() catches.
+            signal.signal(signal.SIGINT, lambda *_: _shutdown(loop))
 
         server = await start_connect_proxy(port=args.port)
         reporter_task = asyncio.create_task(_daily_reporter(), name="periodic_reporter")

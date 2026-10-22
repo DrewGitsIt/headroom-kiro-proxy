@@ -120,6 +120,20 @@ cd headroom-kiro-proxy
 python3 -m venv .venv && .venv/bin/pip install headroom-ai
 .venv/bin/python src/connect_proxy.py --port 9090 --debug
 
+# Custom kiro host (for testing against different endpoints)
+.venv/bin/python src/connect_proxy.py --port 9090 --kiro-host runtime.example.com
+
 # Run tests
 python -m pytest tests/
 ```
+
+## Custom kiro host
+
+The proxy normally intercepts traffic to `runtime.us-east-1.kiro.dev`. For testing or development against a different endpoint, use the `--kiro-host` flag:
+
+```bash
+# Start proxy with custom host
+python src/connect_proxy.py --port 9090 --kiro-host my-custom-host.example.com
+```
+
+The proxy will then intercept and compress traffic to your custom host instead of the default kiro runtime.

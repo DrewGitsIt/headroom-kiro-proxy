@@ -54,26 +54,162 @@ def get_import_error() -> Exception | None:
     return _import_err
 
 
-def make_server_ssl_context() -> ssl.SSLContext | None:
-    """Load the local CA cert/key for TLS interception.
+_PROXY_DIR = Path.home() / ".kiro-proxy"
+_CA_CERT_PATH = _PROXY_DIR / "ca-cert.pem"
+_CA_KEY_PATH = _PROXY_DIR / "ca-key.pem"
+# Legacy single-host cert/key, kept as a last-resort fallback for installs
+# that predate per-host cert generation (no ca-key.pem on disk).
+_LEGACY_CERT_PATH = _PROXY_DIR / "cert.pem"
+_LEGACY_KEY_PATH = _PROXY_DIR / "key.pem"
 
-    Returns None if certs are missing — caller should fall back to
-    raw tunnel passthrough.
+# In-memory cache of generated leaf certs, keyed by hostname. Avoids
+# re-signing a new cert (and rebuilding an SSLContext) on every single
+# connection to the same host — kiro's traffic hits the same 1-3 hosts
+# repeatedly for the life of the process.
+_leaf_cert_cache: dict[str, ssl.SSLContext] = {}
+_ca_keypair: tuple[Any, Any] | None = None  # (ca_key, ca_cert), loaded once
+_ca_load_failed = False
+
+
+def _load_ca() -> tuple[Any, Any] | None:
+    """Load (and cache) the local CA private key + certificate.
+
+    Returns None if the CA files are missing or unreadable — caller should
+    fall back to the legacy static cert or raw tunnel passthrough.
     """
-    cert_path = Path.home() / ".kiro-proxy" / "cert.pem"
-    key_path = Path.home() / ".kiro-proxy" / "key.pem"
+    global _ca_keypair, _ca_load_failed
+    if _ca_keypair is not None:
+        return _ca_keypair
+    if _ca_load_failed:
+        return None
 
-    if not cert_path.exists() or not key_path.exists():
-        logger.warning("TLS certs not found at %s — running in passthrough mode", cert_path.parent)
+    if not _CA_CERT_PATH.exists() or not _CA_KEY_PATH.exists():
         return None
 
     try:
+        from cryptography import x509
+        from cryptography.hazmat.primitives import serialization
+
+        ca_key = serialization.load_pem_private_key(_CA_KEY_PATH.read_bytes(), password=None)
+        ca_cert = x509.load_pem_x509_certificate(_CA_CERT_PATH.read_bytes())
+        _ca_keypair = (ca_key, ca_cert)
+        return _ca_keypair
+    except Exception as exc:
+        logger.error("Failed to load CA cert/key: %s — falling back to static cert", exc)
+        _ca_load_failed = True
+        return None
+
+
+def _generate_leaf_cert(host: str) -> tuple[bytes, bytes] | None:
+    """Sign a fresh leaf cert for ``host`` using the local CA.
+
+    Returns (cert_pem, key_pem), or None if the CA isn't available or
+    signing failed for any reason.
+    """
+    ca = _load_ca()
+    if ca is None:
+        return None
+    ca_key, ca_cert = ca
+
+    try:
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+        from datetime import datetime, timedelta, timezone
+
+        leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        leaf_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, host)])
+        now = datetime.now(timezone.utc)
+        leaf_cert = (
+            x509.CertificateBuilder()
+            .subject_name(leaf_name)
+            .issuer_name(ca_cert.subject)
+            .public_key(leaf_key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(minutes=5))
+            .not_valid_after(now + timedelta(days=825))
+            .add_extension(x509.SubjectAlternativeName([x509.DNSName(host)]), critical=False)
+            .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+            .sign(ca_key, hashes.SHA256())
+        )
+        cert_pem = leaf_cert.public_bytes(serialization.Encoding.PEM)
+        key_pem = leaf_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+        return cert_pem, key_pem
+    except Exception as exc:
+        logger.error("Failed to generate leaf cert for %s: %s", host, exc)
+        return None
+
+
+def _legacy_static_context() -> ssl.SSLContext | None:
+    """Load the old single-host cert.pem/key.pem, for installs without a CA key."""
+    if not _LEGACY_CERT_PATH.exists() or not _LEGACY_KEY_PATH.exists():
+        return None
+    try:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ctx.load_cert_chain(str(cert_path), str(key_path))
+        ctx.load_cert_chain(str(_LEGACY_CERT_PATH), str(_LEGACY_KEY_PATH))
+        # Our request parser only understands HTTP/1.1 framing. Without this,
+        # a client that supports HTTP/2 may negotiate it via ALPN and send
+        # binary frames we can't parse, which fails silently further down.
+        ctx.set_alpn_protocols(["http/1.1"])
         return ctx
     except (ssl.SSLError, OSError) as exc:
-        logger.error("Failed to load TLS certs: %s — running in passthrough mode", exc)
+        logger.error("Failed to load static TLS certs: %s", exc)
         return None
+
+
+def is_tls_available() -> bool:
+    """Whether some form of TLS interception (dynamic CA or static cert) works."""
+    return _load_ca() is not None or (_LEGACY_CERT_PATH.exists() and _LEGACY_KEY_PATH.exists())
+
+
+def make_server_ssl_context(host: str | None = None) -> ssl.SSLContext | None:
+    """Build an SSLContext presenting a cert valid for ``host``.
+
+    When the local CA key is available, signs and caches a fresh leaf cert
+    for the exact requested hostname, so any kiro region/host works without
+    reinstalling or editing a SAN list by hand. Falls back to the legacy
+    static cert.pem (one fixed hostname) if no CA key is present, and to
+    None (raw tunnel passthrough) if neither is usable.
+    """
+    if host:
+        cached = _leaf_cert_cache.get(host)
+        if cached is not None:
+            return cached
+
+        leaf = _generate_leaf_cert(host)
+        if leaf is not None:
+            cert_pem, key_pem = leaf
+            try:
+                ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                # Force HTTP/1.1: our parser can't handle HTTP/2 binary framing,
+                # and without this the client may silently negotiate h2.
+                ctx.set_alpn_protocols(["http/1.1"])
+                import tempfile
+
+                with tempfile.NamedTemporaryFile(suffix=".pem", delete=False) as cert_f, \
+                        tempfile.NamedTemporaryFile(suffix=".pem", delete=False) as key_f:
+                    cert_f.write(cert_pem)
+                    key_f.write(key_pem)
+                    cert_tmp_path, key_tmp_path = cert_f.name, key_f.name
+                try:
+                    ctx.load_cert_chain(cert_tmp_path, key_tmp_path)
+                finally:
+                    import os as _os
+                    _os.unlink(cert_tmp_path)
+                    _os.unlink(key_tmp_path)
+                _leaf_cert_cache[host] = ctx
+                logger.info("kiro: signed fresh TLS cert for %s via local CA", host)
+                return ctx
+            except (ssl.SSLError, OSError) as exc:
+                logger.error("Failed to load generated leaf cert for %s: %s", host, exc)
+
+    # Fall back to the legacy fixed-host cert (pre-CA installs).
+    return _legacy_static_context()
 
 
 async def intercept_kiro(
@@ -87,7 +223,8 @@ async def intercept_kiro(
     writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
     await writer.drain()
 
-    server_ssl_ctx = make_server_ssl_context()
+    host = target.rpartition(":")[0] or target
+    server_ssl_ctx = make_server_ssl_context(host)
     if server_ssl_ctx is None:
         logger.warning("No TLS cert available, tunneling raw")
         _stats["tunnels_passthrough"] += 1
@@ -115,11 +252,16 @@ async def intercept_kiro(
 
     try:
         request_data = await _read_http_request(tls_reader)
-    except (asyncio.TimeoutError, ConnectionError):
+    except (asyncio.TimeoutError, ConnectionError) as exc:
+        logger.warning("Reading request from %s failed: %s", target, exc)
         tls_writer.close()
         return
 
     if request_data is None:
+        logger.warning(
+            "No parseable HTTP/1.1 request on %s — connection dropped without compression",
+            target,
+        )
         tls_writer.close()
         return
 
@@ -203,13 +345,20 @@ async def _read_http_request(
     try:
         request_line = await asyncio.wait_for(reader.readline(), timeout=30.0)
     except asyncio.TimeoutError:
+        logger.warning("Timed out waiting for first request line")
         return None
 
     if not request_line:
+        logger.debug("Client closed connection before sending a request")
         return None
 
     parts = request_line.decode("latin-1").strip().split(" ", 2)
     if len(parts) < 2:
+        logger.warning(
+            "Could not parse request line as HTTP/1.1 (got %d bytes, first 32: %r); "
+            "client may have negotiated an unsupported protocol (e.g. HTTP/2)",
+            len(request_line), request_line[:32],
+        )
         return None
 
     method, path = parts[0], parts[1]
@@ -313,6 +462,9 @@ async def _forward_and_stream(
     port = int(port_str) if port_str else 443
 
     upstream_ssl = ssl.create_default_context()
+    # Force HTTP/1.1 to the real kiro server too: our response-streaming
+    # code below parses HTTP/1.1 framing (Content-Length / chunked), not h2.
+    upstream_ssl.set_alpn_protocols(["http/1.1"])
     upstream_reader, upstream_writer = await asyncio.wait_for(
         asyncio.open_connection(host, port, ssl=upstream_ssl), timeout=30.0
     )
